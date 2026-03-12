@@ -1,11 +1,11 @@
-﻿// File: TradingSystem.Infrastructure/Services/StockPriceService.cs
+﻿using Microsoft.EntityFrameworkCore;
 using System.Threading.Tasks;
-using Microsoft.EntityFrameworkCore;
+using TradingSystem.Application.Interfaces;
 using TradingSystem.Infrastructure.Data;
 
-namespace TradingSystem.Infrastructure.Services // <-- Updated Namespace
+namespace TradingSystem.Infrastructure.Services
 {
-    public class StockPriceService
+    public class StockPriceService : IStockPriceService
     {
         private readonly TradingDbContext _dbContext;
 

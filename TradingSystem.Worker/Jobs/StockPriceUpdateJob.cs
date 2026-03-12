@@ -1,15 +1,15 @@
 ﻿using System.Threading.Tasks;
 using Quartz;
-using TradingSystem.Infrastructure.Services;
+using TradingSystem.Application.Interfaces; 
 
 namespace TradingSystem.Worker.Jobs
 {
-    [DisallowConcurrentExecution] // Prevents overlapping runs if the job runs longer than its interval
+    [DisallowConcurrentExecution]
     public class StockPriceUpdateJob : IJob
     {
-        private readonly StockPriceService _stockPriceService;
+        private readonly IStockPriceService _stockPriceService; 
 
-        public StockPriceUpdateJob(StockPriceService stockPriceService)
+        public StockPriceUpdateJob(IStockPriceService stockPriceService)
         {
             _stockPriceService = stockPriceService;
         }
@@ -19,7 +19,6 @@ namespace TradingSystem.Worker.Jobs
             var ticker = context.JobDetail.JobDataMap.GetString("ticker");
             var serverId = context.JobDetail.JobDataMap.GetString("ServerId");
 
-            // FIX: Quartz doesn't have GetDecimal, so we get strings and parse them
             var orderPriceStr = context.JobDetail.JobDataMap.GetString("orderPrice");
             var orderVolumeStr = context.JobDetail.JobDataMap.GetString("orderVolume");
 

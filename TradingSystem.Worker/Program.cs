@@ -5,6 +5,7 @@ using TradingSystem.Infrastructure.Data;
 using TradingSystem.Worker.Jobs;
 using TradingSystem.Worker.Services;
 using TradingSystem.Infrastructure.Services;
+using TradingSystem.Application.Interfaces;
 
 
 var builder = Host.CreateDefaultBuilder(args);
@@ -19,7 +20,7 @@ builder.ConfigureServices((hostContext, services) =>
     );
     // Register Application Services
     services.AddTransient<TradePersistenceService>();
-    services.AddTransient<StockPriceService>();
+    services.AddTransient<IStockPriceService, StockPriceService>();
     services.AddTransient<SymbolDataPullJob>();
 
     // Register the Quartz Listener
