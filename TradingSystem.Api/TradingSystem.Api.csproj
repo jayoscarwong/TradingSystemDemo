@@ -18,10 +18,9 @@
     <PackageReference Include="Quartz.Serialization.SystemTextJson" Version="3.16.1" />
     <PackageReference Include="Swashbuckle.AspNetCore" Version="10.1.5" />
   </ItemGroup>  
-  
   <ItemGroup>
     <ProjectReference Include="..\TradingSystem.Application\TradingSystem.Application.csproj" />
     <ProjectReference Include="..\TradingSystem.Infrastructure\TradingSystem.Infrastructure.csproj" />
+    <ProjectReference Include="..\TradingSystem.Worker\TradingSystem.Worker.csproj" />
   </ItemGroup>
-
 </Project>
