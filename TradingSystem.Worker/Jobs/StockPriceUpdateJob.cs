@@ -1,6 +1,6 @@
 ﻿using System.Threading.Tasks;
 using Quartz;
-using TradingSystem.Application.Services;
+using TradingSystem.Infrastructure.Services;
 
 namespace TradingSystem.Worker.Jobs
 {
@@ -18,10 +18,14 @@ namespace TradingSystem.Worker.Jobs
         {
             var ticker = context.JobDetail.JobDataMap.GetString("ticker");
             var serverId = context.JobDetail.JobDataMap.GetString("ServerId");
-            var orderPrice = context.JobDetail.JobDataMap.GetDecimal("orderPrice");
-            var orderVolume = context.JobDetail.JobDataMap.GetDecimal("orderVolume");
 
-            // ServerId is passed down to guarantee isolation across servers
+            // FIX: Quartz doesn't have GetDecimal, so we get strings and parse them
+            var orderPriceStr = context.JobDetail.JobDataMap.GetString("orderPrice");
+            var orderVolumeStr = context.JobDetail.JobDataMap.GetString("orderVolume");
+
+            decimal.TryParse(orderPriceStr, out decimal orderPrice);
+            decimal.TryParse(orderVolumeStr, out decimal orderVolume);
+
             await _stockPriceService.UpdateStockPriceAsync(ticker, serverId, orderPrice, orderVolume);
         }
     }

@@ -1,10 +1,10 @@
 using MassTransit;
 using Microsoft.EntityFrameworkCore;
 using Quartz;
-using TradingSystem.Application.Services;
 using TradingSystem.Infrastructure.Data;
 using TradingSystem.Worker.Jobs;
 using TradingSystem.Worker.Services;
+using TradingSystem.Infrastructure.Services;
 
 
 var builder = Host.CreateDefaultBuilder(args);

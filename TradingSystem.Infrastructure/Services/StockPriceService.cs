@@ -1,8 +1,9 @@
-﻿using System.Threading.Tasks;
+﻿// File: TradingSystem.Infrastructure/Services/StockPriceService.cs
+using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
 using TradingSystem.Infrastructure.Data;
 
-namespace TradingSystem.Application.Services
+namespace TradingSystem.Infrastructure.Services // <-- Updated Namespace
 {
     public class StockPriceService
     {
