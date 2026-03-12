@@ -49,7 +49,6 @@ INSERT INTO TradingServers (Id, ServerName, IsEnabled) VALUES ('ServerB', 'EU-We
 INSERT INTO StockPrices (Ticker, ServerId, CurrentPrice) VALUES ('AAPL', 'ServerA', 150.00);
 INSERT INTO StockPrices (Ticker, ServerId, CurrentPrice) VALUES ('AAPL', 'ServerB', 150.00);
 
-
 -- ====================================================================
 -- 3. QUARTZ.NET CLUSTERING TABLES (MySQL InnoDB)
 -- ====================================================================

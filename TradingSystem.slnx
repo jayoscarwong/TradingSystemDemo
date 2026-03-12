@@ -4,6 +4,8 @@
     <File Path="keda-rabbitmq-scaler.yaml" />
     <File Path="init.sql" />
     <File Path="build-trading-system.ps1" />
+    <File Path="TradingSystem.Api/appsettings.Development.json" />
+    <File Path="TradingSystem.Api/appsettings.json" />
   </Folder>
   <Project Path="TradingSystem.Domain\TradingSystem.Domain.csproj" />
   <Project Path="TradingSystem.Application\TradingSystem.Application.csproj" />

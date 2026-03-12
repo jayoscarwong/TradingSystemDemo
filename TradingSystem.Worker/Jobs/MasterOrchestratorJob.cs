@@ -3,6 +3,7 @@ using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Quartz;
+using Quartz.Impl.Matchers;
 using TradingSystem.Infrastructure.Data;
 
 namespace TradingSystem.Worker.Jobs
@@ -24,32 +25,42 @@ namespace TradingSystem.Worker.Jobs
             using var scope = _scopeFactory.CreateScope();
             var dbContext = scope.ServiceProvider.GetRequiredService<TradingDbContext>();
 
-            // Query active servers dynamically
+            // Query DB for active servers instead of hardcoding
             var activeServers = await dbContext.TradingServers
                 .Where(s => s.IsEnabled)
                 .ToListAsync();
 
+            var activeServerIds = activeServers.Select(s => s.Id).ToList();
+
             foreach (var server in activeServers)
             {
-                var jobKey = new JobKey($"StockPriceUpdateJob-{server.Id}", "TradingGroup");
+                var jobKey = new JobKey($"DataPullJob-{server.Id}", "DataPullGroup");
 
                 if (!await scheduler.CheckExists(jobKey))
                 {
-                    var job = JobBuilder.Create<StockPriceUpdateJob>()
+                    var job = JobBuilder.Create<SymbolDataPullJob>()
                        .WithIdentity(jobKey)
                        .UsingJobData("ServerId", server.Id)
-                       .UsingJobData("ticker", "AAPL") // Defaulting for demo purposes
-                       .UsingJobData("orderPrice", "145.0")
-                       .UsingJobData("orderVolume", "100")
                        .Build();
 
                     var trigger = TriggerBuilder.Create()
-                       .WithIdentity($"Trigger-{server.Id}", "TradingGroup")
+                       .WithIdentity($"Trigger-{server.Id}", "DataPullGroup")
                        .StartNow()
-                       .WithCronSchedule("0 0/5 * * * ?") // Every 5 minutes
+                       .WithSimpleSchedule(x => x.WithIntervalInSeconds(10).RepeatForever())
                        .Build();
 
                     await scheduler.ScheduleJob(job, trigger);
+                }
+            }
+
+            // Clean up old jobs if a server is disabled
+            var existingJobKeys = await scheduler.GetJobKeys(GroupMatcher<JobKey>.GroupEquals("DataPullGroup"));
+            foreach (var jobKey in existingJobKeys)
+            {
+                var serverIdFromJob = jobKey.Name.Replace("DataPullJob-", "");
+                if (!activeServerIds.Contains(serverIdFromJob))
+                {
+                    await scheduler.DeleteJob(jobKey);
                 }
             }
         }

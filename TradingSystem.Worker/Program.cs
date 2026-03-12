@@ -18,9 +18,9 @@ builder.ConfigureServices((hostContext, services) =>
     services.AddDbContext<TradingDbContext>(options =>
         options.UseMySql(connectionString, ServerVersion.AutoDetect(connectionString))
     );
-    // Register Application Services
     services.AddTransient<TradePersistenceService>();
-    services.AddTransient<IStockPriceService, StockPriceService>();
+    // Make sure your IStockPriceService is registered so the Consumer can use it
+    services.AddTransient<TradingSystem.Application.Interfaces.IStockPriceService, TradingSystem.Infrastructure.Services.StockPriceService>();
     services.AddTransient<SymbolDataPullJob>();
 
     // Register the Quartz Listener
@@ -34,21 +34,15 @@ builder.ConfigureServices((hostContext, services) =>
 
     services.AddMassTransit(x =>
     {
-        // 1. Register the new consumer
         x.AddConsumer<TradingSystem.Worker.Consumers.FetchStockPriceConsumer>();
-
         x.UsingRabbitMq((context, cfg) =>
         {
-            var host = rabbitMQHost ?? "tradingsystem-rabbitmq";
-            var user = rabbitMQUsername ?? "guest";
-            var pass = rabbitMQpassword ?? "guest";
-
-            cfg.Host(host, "/", h => {
-                h.Username(user);
-                h.Password(pass);
+            cfg.Host(rabbitMQHost, "/", h => {
+                h.Username(rabbitMQUsername);
+                h.Password(rabbitMQpassword);
             });
 
-            // 2. Configure the specific Receive Endpoint (Queue) for this consumer
+            // ADDED: Bind the Consumer to the KEDA queue
             cfg.ReceiveEndpoint("fetch-stock-price-queue", e =>
             {
                 e.ConfigureConsumer<TradingSystem.Worker.Consumers.FetchStockPriceConsumer>(context);
@@ -84,9 +78,8 @@ builder.ConfigureServices((hostContext, services) =>
         q.AddTrigger(opts => opts
           .ForJob(jobKey)
           .WithIdentity("MasterOrchestratorTrigger")
-          .StartNow() // <-- ADD THIS LINE
-          .WithCronSchedule("0 0/5 * * * ?")); //Every 5 minutes to ensure we catch any missed executions and keep the system in sync. We can adjust this frequency as needed.
-        // .WithCronSchedule("0 0 * * * ?")); // Runs every hour to check for new/disabled servers
+          .StartNow() // ADDED: Forces the job to run immediately on container start
+          .WithCronSchedule("0 0/5 * * * ?")); // Runs every 5 minutes
     });
 
     services.AddQuartzHostedService(options =>
