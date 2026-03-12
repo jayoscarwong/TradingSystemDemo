@@ -1,9 +1,11 @@
 using MassTransit;
+using Microsoft.EntityFrameworkCore;
 using Quartz;
+using TradingSystem.Application.Services;
+using TradingSystem.Infrastructure.Data;
 using TradingSystem.Worker.Jobs;
 using TradingSystem.Worker.Services;
-using Microsoft.EntityFrameworkCore;
-using TradingSystem.Infrastructure.Data;
+
 
 var builder = Host.CreateDefaultBuilder(args);
 
@@ -15,41 +17,39 @@ builder.ConfigureServices((hostContext, services) =>
     services.AddDbContext<TradingDbContext>(options =>
         options.UseMySql(connectionString, ServerVersion.AutoDetect(connectionString))
     );
-
+    // Register Application Services
     services.AddTransient<TradePersistenceService>();
-    // Register your dynamic job so Quartz can inject the MassTransit endpoint
+    services.AddTransient<StockPriceService>();
     services.AddTransient<SymbolDataPullJob>();
 
-    var rabbitMQSettings =configuration.GetSection("RabbitMQ");
-    string rabbitMQHost = rabbitMQSettings["Host"] ?? string.Empty;
-    string rabbitMQUsername = rabbitMQSettings["Username"] ?? string.Empty;
-    string rabbitMQpassword = rabbitMQSettings["Password"] ?? string.Empty;
+    // Register the Quartz Listener
+    services.AddSingleton<JobExecutionHistoryListener>();
+
+
+    var rabbitMQSettings = configuration.GetSection("RabbitMQ");
+    string rabbitMQHost = rabbitMQSettings["Host"] ?? "tradingsystem-rabbitmq";
+    string rabbitMQUsername = rabbitMQSettings["Username"] ?? "guest";
+    string rabbitMQpassword = rabbitMQSettings["Password"] ?? "guest";
 
     services.AddMassTransit(x =>
     {
         x.UsingRabbitMq((context, cfg) =>
         {
-            // Pull exact string values from appsettings.json
-            var host = rabbitMQHost ?? "tradingsystem-rabbitmq";
-            var user = rabbitMQUsername ?? "guest";
-            var pass = rabbitMQpassword ?? "guest";
-
-            cfg.Host(host, "/", h => {
-                h.Username(user);
-                h.Password(pass);
+            cfg.Host(rabbitMQHost, "/", h =>
+            {
+                h.Username(rabbitMQUsername);
+                h.Password(rabbitMQpassword);
             });
-
             cfg.ConfigureEndpoints(context);
         });
     });
+
 
     services.AddQuartz(q =>
     {
         q.UsePersistentStore(s =>
         {
             s.UseProperties = true;
-
-            // THE FIX: Change this from s.UseMySql to s.UseMySqlConnector
             s.UseMySqlConnector(sql =>
             {
                 sql.ConnectionString = connectionString;
@@ -64,19 +64,26 @@ builder.ConfigureServices((hostContext, services) =>
         });
 
 
+        // Register the Master Orchestrator Job
         var jobKey = new JobKey("MasterOrchestratorJob");
         q.AddJob<MasterOrchestratorJob>(opts => opts.WithIdentity(jobKey));
         q.AddTrigger(opts => opts
           .ForJob(jobKey)
           .WithIdentity("MasterOrchestratorTrigger")
-          .WithCronSchedule("0 0 * * * ?"));
+          .WithCronSchedule("0 0 * * * ?")); // Runs every hour to check for new/disabled servers
     });
 
     services.AddQuartzHostedService(options =>
     {
         options.WaitForJobsToComplete = true;
     });
+
 });
 
 var host = builder.Build();
+// Register the job listener globally before running
+var schedulerFactory = host.Services.GetRequiredService<ISchedulerFactory>();
+var scheduler = schedulerFactory.GetScheduler().GetAwaiter().GetResult();
+var listener = host.Services.GetRequiredService<JobExecutionHistoryListener>();
+scheduler.ListenerManager.AddJobListener(listener);
 host.Run();

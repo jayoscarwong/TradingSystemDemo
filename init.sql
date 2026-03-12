@@ -146,3 +146,46 @@ CREATE TABLE QRTZ_LOCKS (
     LOCK_NAME VARCHAR(40) NOT NULL,
     PRIMARY KEY (SCHED_NAME,LOCK_NAME)
 ) ENGINE=InnoDB;
+
+
+USE tradingsystem;
+
+-- ====================================================================
+-- NEW APPLICATION TABLES FOR DYNAMIC SCHEDULING & MONITORING
+-- ====================================================================
+
+CREATE TABLE TradingServers (
+    Id VARCHAR(50) NOT NULL PRIMARY KEY,
+    ServerName VARCHAR(100) NOT NULL,
+    IsEnabled BOOLEAN NOT NULL DEFAULT TRUE,
+    LastPingAt TIMESTAMP(6) NULL
+) ENGINE=InnoDB;
+
+CREATE TABLE StockPrices (
+    Ticker VARCHAR(10) NOT NULL,
+    ServerId VARCHAR(50) NOT NULL,
+    CurrentPrice DECIMAL(18, 4) NOT NULL,
+    BuyVolume DECIMAL(18, 4) NOT NULL DEFAULT 0,
+    SellVolume DECIMAL(18, 4) NOT NULL DEFAULT 0,
+    LastUpdatedAt TIMESTAMP(6) DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
+    PRIMARY KEY (Ticker, ServerId),
+    FOREIGN KEY (ServerId) REFERENCES TradingServers(Id)
+) ENGINE=InnoDB;
+
+CREATE TABLE JobExecutionHistories (
+    Id CHAR(36) NOT NULL PRIMARY KEY,
+    JobName VARCHAR(200) NOT NULL,
+    ServerId VARCHAR(50) NULL,
+    Status VARCHAR(50) NOT NULL,
+    StartTime TIMESTAMP(6) NOT NULL,
+    EndTime TIMESTAMP(6) NOT NULL,
+    ErrorMessage TEXT NULL
+) ENGINE=InnoDB;
+
+-- Insert some dummy servers to test the MasterOrchestratorJob
+INSERT INTO TradingServers (Id, ServerName, IsEnabled) VALUES ('ServerA', 'US-East Trading Node', 1);
+INSERT INTO TradingServers (Id, ServerName, IsEnabled) VALUES ('ServerB', 'EU-West Trading Node', 1);
+
+-- Insert dummy stock base prices for the servers
+INSERT INTO StockPrices (Ticker, ServerId, CurrentPrice) VALUES ('AAPL', 'ServerA', 150.00);
+INSERT INTO StockPrices (Ticker, ServerId, CurrentPrice) VALUES ('AAPL', 'ServerB', 150.00);
