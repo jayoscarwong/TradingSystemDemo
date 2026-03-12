@@ -1,6 +1,4 @@
 ﻿using System;
-using System.Collections.Generic;
-using System.Text;
 
 namespace TradingSystem.Domain.Entities
 {
@@ -11,6 +9,7 @@ namespace TradingSystem.Domain.Entities
         public decimal TotalStockVolume { get; set; }
         public decimal BuyVolume { get; set; }
         public decimal SellVolume { get; set; }
+        public DateTime LastUpdatedAt { get; set; } // <-- Added back
         public DateTime RowVersion { get; set; }
     }
 }

@@ -4,9 +4,6 @@ using Quartz;
 using TradingSystem.Infrastructure.Data;
 using TradingSystem.Worker.Jobs;
 using TradingSystem.Worker.Services;
-using TradingSystem.Infrastructure.Services;
-using TradingSystem.Application.Interfaces;
-
 
 var builder = Host.CreateDefaultBuilder(args);
 
@@ -19,13 +16,17 @@ builder.ConfigureServices((hostContext, services) =>
         options.UseMySql(connectionString, ServerVersion.AutoDetect(connectionString))
     );
     services.AddTransient<TradePersistenceService>();
-    // Make sure your IStockPriceService is registered so the Consumer can use it
-    services.AddTransient<TradingSystem.Application.Interfaces.IStockPriceService, TradingSystem.Infrastructure.Services.StockPriceService>();
     services.AddTransient<SymbolDataPullJob>();
-
     // Register the Quartz Listener
     //services.AddSingleton<JobExecutionHistoryListener>();
     services.AddTransient<TradingSystem.Worker.Jobs.JobExecutionHistoryListener>();
+
+    var RedisSettings = configuration.GetSection("Redis");
+    services.AddStackExchangeRedisCache(options =>
+    {
+        options.Configuration = RedisSettings["Configuration"];
+        options.InstanceName = RedisSettings["InstanceName"];
+    });
 
     var rabbitMQSettings = configuration.GetSection("RabbitMQ");
     string rabbitMQHost = rabbitMQSettings["Host"] ?? "tradingsystem-rabbitmq";
