@@ -23,7 +23,6 @@ namespace TradingSystem.Api.Controllers
         [HttpGet("{jobName}/status")]
         public async Task<IActionResult> GetTaskStatus(string jobName)
         {
-            // Query the execution history we created via the Quartz Listener in the Worker
             var history = await _dbContext.JobExecutionHistories
                 .Where(h => h.JobName == jobName)
                 .OrderByDescending(h => h.StartTime)
@@ -53,14 +52,14 @@ namespace TradingSystem.Api.Controllers
 
                 foreach (var jobKey in jobKeys)
                 {
-                    var detail = await scheduler.GetJobDetail(jobKey);
+                    // FIX: We remove the GetJobDetail call so Quartz doesn't try to load the Worker DLL
+                    // We only request the triggers associated with the job key.
                     var triggers = await scheduler.GetTriggersOfJob(jobKey);
 
                     allJobs.Add(new
                     {
                         JobName = jobKey.Name,
                         GroupName = jobKey.Group,
-                        Description = detail?.Description,
                         NextFireTime = triggers.FirstOrDefault()?.GetNextFireTimeUtc()
                     });
                 }
