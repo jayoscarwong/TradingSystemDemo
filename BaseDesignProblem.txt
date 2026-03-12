@@ -1,0 +1,48 @@
+Core Requirements
+1. Scheduler Service Implementation
+•	Implement a background service using Quartz.NET for job scheduling
+•	Support both simple (interval-based) and cron-based task scheduling
+•	Configure persistent job storage (use your preferred database: PostgreSQL, MySQL)
+•	Implement graceful shutdown with proper job completion handling
+
+2. REST API Interface
+Create ASP.NET Core Web API with the following endpoints:
+•	POST /api/tasks - Create a new scheduled task
+•	GET /api/tasks - Query all tasks with filtering and pagination
+•	GET /api/tasks/{id} - Get specific task details
+•	PUT /api/tasks/{id} - Update an existing task
+•	DELETE /api/tasks/{id} - Remove a task from the scheduler
+•	GET /api/tasks/{id}/status - Get task execution status and history
+
+3. Task Monitoring & Status Tracking
+•	Track and persist task execution history (start time, end time, status, errors)
+•	Capture last triggered timestamp and next scheduled execution time
+•	Implement real-time status reporting (running, completed, failed)
+•	Store execution metrics for performance analysis
+
+4. Concurrent Execution Control
+•	Implement a mechanism to disable concurrent execution for specific tasks
+•	Use Quartz.NET's DisallowConcurrentExecution attribute or custom locking
+•	Handle scenarios where a job takes longer than its scheduled interval
+
+5. Trading Server Integration (Distributed Processing)
+Scenario:
+Multiple trading servers process market symbols independently. Each server needs to pull and process symbol data without interfering with other servers performing the same task.
+Requirements:
+•	Design a job that can run concurrently across multiple server instances
+•	Each job execution should process data for a specific trading server (identified by server ID)
+•	Implement proper task isolation to prevent cross-server data contamination
+•	Example: SymbolDataPullJob executes every 5 minutes for ServerA, ServerB, and ServerC independently
+
+6. Dynamic Task Management Based on Server State
+Scenario:
+A master task runs every hour and automatically creates child tasks based on the current list of enabled trading servers. When servers are added or disabled, child tasks should be created or removed automatically.
+Requirements:
+•	Create a parent task that queries the database for enabled trading servers
+•	Dynamically create child tasks for each enabled server (if not already exists)
+•	Automatically remove tasks when their associated server is disabled
+•	Ensure idempotency - running the master task multiple times should not create duplicate jobs
+•	Handle edge cases: server re-enabled after being disabled, concurrent master task executions
+
+Assume that the trading servers and their states are stored in a database table (e.g., TradingServers) with fields like ServerID, ServerName, IsEnabled, etc. The master task will query this table to determine which child tasks to create or remove based on the current state of the trading servers.
+We need to ensure that the system is robust, scalable, and can handle dynamic changes in the trading server landscape without manual intervention. The implementation should also include proper error handling and logging for monitoring and troubleshooting purposes.

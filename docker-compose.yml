@@ -1,0 +1,98 @@
+version: '3.8'
+
+networks:
+  trading-network:
+    driver: bridge
+
+services:
+  mysql-db:
+    image: mysql:8.0
+    container_name: tradingsystem-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: rootpassword
+      MYSQL_DATABASE: tradingsystem
+    ports:
+      - "3306:3306"
+    networks:
+      - trading-network
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql 
+    command: --default-authentication-plugin=mysql_native_password
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+
+  redis-cache:
+    image: redis:7-alpine
+    container_name: tradingsystem-redis
+    ports:
+      - "6379:6379"
+    networks:
+      - trading-network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  rabbitmq-broker:
+    image: rabbitmq:3-management-alpine
+    container_name: tradingsystem-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: guest
+      RABBITMQ_DEFAULT_PASS: guest
+    ports:
+      - "5672:5672"   
+      - "15672:15672" 
+    networks:
+      - trading-network
+    healthcheck:
+      test: rabbitmq-diagnostics -q ping
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # ---.NET 8 API ---
+  tradingsystem-api:
+    build: 
+      context: "."
+      dockerfile: "TradingSystem.Api/Dockerfile"
+    container_name: tradingsystem-api
+    ports:
+      - "8080:8080" # Exposed externally for REST calls
+    networks:
+      - trading-network
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - "ConnectionStrings__DefaultConnection=Server=tradingsystem-mysql;Database=tradingsystem;User=root;Password=rootpassword;"
+    depends_on:
+      mysql-db:
+        condition: service_healthy
+      redis-cache:
+        condition: service_healthy
+
+
+  # ---.NET 8 Worker ---
+  tradingsystem-worker:
+    build: 
+      context: "."
+      dockerfile: "TradingSystem.Worker/Dockerfile"
+    container_name: tradingsystem-worker
+    # Workers do not need 'ports' mapped as they only pull from RabbitMQ/MySQL internally
+    networks:
+      - trading-network
+    environment:
+      - "ConnectionStrings__DefaultConnection=Server=tradingsystem-mysql;Database=tradingsystem;User=root;Password=rootpassword;"
+    depends_on:
+      mysql-db:
+        condition: service_healthy
+      rabbitmq-broker:
+        condition: service_healthy
+
+volumes:
+  mysql_data:

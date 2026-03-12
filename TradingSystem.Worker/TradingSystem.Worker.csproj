@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk.Worker">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UserSecretsId>dotnet-TradingSystem.Worker-34dc1a16-792a-4c48-97fc-4c30461cc498</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="MassTransit.RabbitMQ" Version="8.3.3" />
+    <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.3" />
+    <PackageReference Include="Pomelo.EntityFrameworkCore.MySql" Version="9.0.0" />
+    <PackageReference Include="Quartz.Extensions.Hosting" Version="3.16.1" />
+    <PackageReference Include="Quartz.Serialization.SystemTextJson" Version="3.16.1" />
+  </ItemGroup>  
+
+  <ItemGroup>
+    <ProjectReference Include="..\TradingSystem.Application\TradingSystem.Application.csproj" />
+    <ProjectReference Include="..\TradingSystem.Infrastructure\TradingSystem.Infrastructure.csproj" />
+  </ItemGroup>
+</Project>
