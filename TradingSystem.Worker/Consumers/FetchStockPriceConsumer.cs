@@ -2,6 +2,14 @@
 using MassTransit;
 using Microsoft.Extensions.Logging;
 using TradingSystem.Application.Commands;
+using System;
+using System.Linq;
+using System.Threading.Tasks;
+using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Logging;
+using TradingSystem.Application.Interfaces;
+using TradingSystem.Infrastructure.Data;
+
 
 namespace TradingSystem.Worker.Consumers
 {
@@ -9,25 +17,40 @@ namespace TradingSystem.Worker.Consumers
     public class FetchStockPriceConsumer : IConsumer<FetchStockPriceCommand>
     {
         private readonly ILogger<FetchStockPriceConsumer> _logger;
+        private readonly IStockPriceService _stockPriceService;
+        private readonly TradingDbContext _dbContext;
 
-        public FetchStockPriceConsumer(ILogger<FetchStockPriceConsumer> logger)
+        public FetchStockPriceConsumer(ILogger<FetchStockPriceConsumer> logger, IStockPriceService stockPriceService, TradingDbContext dbContext)
         {
             _logger = logger;
+            _stockPriceService = stockPriceService;
+            _dbContext = dbContext;
         }
 
         public async Task Consume(ConsumeContext<FetchStockPriceCommand> context)
         {
             var command = context.Message;
+            _logger.LogInformation($"[MassTransit] Processing market data for {command.Ticker} on {command.ServerId}...");
 
-            _logger.LogInformation($"[MassTransit] Received fetch command. Ticker: {command.Ticker} | Server: {command.ServerId}");
+            // 1. Fetch the LATEST bid from the database for this specific server/ticker
+            var latestBid = await _dbContext.TradeOrders
+                .Where(t => t.StockTicker == command.Ticker && t.ServerId == command.ServerId)
+                .OrderByDescending(t => t.RowVersion)
+                .FirstOrDefaultAsync();
 
-            // TODO: Here is where you would call an external API (like Yahoo Finance, Polygon.io) 
-            // to get the real stock price using the command.Ticker.
+            // 2. Determine the price based on user activity
+            decimal activePrice = latestBid != null ? latestBid.BidAmount : 150.00m; // Default to 150 if no bids exist
+            decimal simulatedVolume = latestBid != null ? 100 : 0; // Spike volume if a bid exists
 
-            // Simulating API network delay
-            await Task.Delay(500);
+            // 3. Update the StockPrices table dynamically based on the bid
+            await _stockPriceService.UpdateStockPriceAsync(
+                ticker: command.Ticker,
+                serverId: command.ServerId,
+                orderPrice: activePrice,
+                orderVolume: simulatedVolume
+            );
 
-            _logger.LogInformation($"[MassTransit] Successfully processed and pulled data for {command.Ticker}");
+            _logger.LogInformation($"[MassTransit] Applied latest bid. {command.Ticker} updated to ${activePrice:F2} in MySQL.");
         }
     }
 }

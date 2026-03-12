@@ -24,8 +24,8 @@ builder.ConfigureServices((hostContext, services) =>
     services.AddTransient<SymbolDataPullJob>();
 
     // Register the Quartz Listener
-    services.AddSingleton<JobExecutionHistoryListener>();
-
+    //services.AddSingleton<JobExecutionHistoryListener>();
+    services.AddTransient<TradingSystem.Worker.Jobs.JobExecutionHistoryListener>();
 
     var rabbitMQSettings = configuration.GetSection("RabbitMQ");
     string rabbitMQHost = rabbitMQSettings["Host"] ?? "tradingsystem-rabbitmq";
@@ -55,6 +55,9 @@ builder.ConfigureServices((hostContext, services) =>
 
     services.AddQuartz(q =>
     {
+        // --- ADD THIS LINE so Quartz logs executions to the database ---
+        q.AddJobListener<TradingSystem.Worker.Jobs.JobExecutionHistoryListener>(Quartz.Impl.Matchers.GroupMatcher<JobKey>.AnyGroup());
+
         q.UsePersistentStore(s =>
         {
             s.UseProperties = true;

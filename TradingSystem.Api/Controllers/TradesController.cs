@@ -4,6 +4,7 @@ using System.Text.Json;
 using System.Threading.Tasks;
 using TradingSystem.Domain.Entities;
 using TradingSystem.Infrastructure.Data;
+using Microsoft.EntityFrameworkCore;
 
 namespace TradingSystem.Api.Controllers
 {
@@ -45,6 +46,27 @@ namespace TradingSystem.Api.Controllers
             await _dbContext.SaveChangesAsync();
 
             return Accepted(new { Message = "Bid received, buffered in Redis, and saved to MySQL." });
+        }
+
+
+        [HttpGet("price/{ticker}/{serverId}")]
+        public async Task<IActionResult> GetRealTimePrice(string ticker, string serverId, [FromServices] TradingDbContext dbContext)
+        {
+            var stockPrice = await dbContext.StockPrices.FirstOrDefaultAsync(s => s.Ticker == ticker && s.ServerId == serverId);
+
+            if (stockPrice == null)
+            {
+                return NotFound(new { Message = $"No active market data found for {ticker} on {serverId}." });
+            }
+
+            return Ok(new
+            {
+                Ticker = stockPrice.Ticker,
+                Server = stockPrice.ServerId,
+                CurrentPrice = stockPrice.CurrentPrice,
+                TotalVolume = stockPrice.BuyVolume,
+                LastUpdated = stockPrice.LastUpdatedAt
+            });
         }
     }
 }
