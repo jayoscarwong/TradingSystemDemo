@@ -19,7 +19,7 @@ namespace TradingSystem.Infrastructure.Data
                .IsRowVersion();
 
             modelBuilder.Entity<StockPrice>()
-                .HasKey(sp => new { sp.Ticker, sp.ServerId }); // Composite Key
+                .HasKey(sp => new { sp.Ticker }); // Composite Key
         }
     }
 }

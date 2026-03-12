@@ -17,7 +17,7 @@ namespace TradingSystem.Infrastructure.Services
         public async Task UpdateStockPriceAsync(string ticker, string serverId, decimal orderPrice, decimal orderVolume)
         {
             var stock = await _dbContext.StockPrices
-                .FirstOrDefaultAsync(s => s.Ticker == ticker && s.ServerId == serverId);
+                .FirstOrDefaultAsync(s => s.Ticker == ticker);
 
             if (stock != null)
             {

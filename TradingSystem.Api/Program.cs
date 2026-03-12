@@ -2,6 +2,12 @@ using Microsoft.EntityFrameworkCore;
 using Quartz;
 using TradingSystem.Infrastructure.Data;
 
+using MassTransit;
+
+
+
+
+
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddControllers();
@@ -24,6 +30,33 @@ if (string.IsNullOrEmpty(connectionString))
 builder.Services.AddDbContext<TradingDbContext>(options =>
     options.UseMySql(connectionString, ServerVersion.AutoDetect(connectionString))
 );
+
+var rabbitMQSettings = builder.Configuration.GetSection("RabbitMQ");
+string rabbitMQHost = rabbitMQSettings["Host"] ?? "tradingsystem-rabbitmq";
+string rabbitMQUsername = rabbitMQSettings["Username"] ?? "guest";
+string rabbitMQpassword = rabbitMQSettings["Password"] ?? "guest";
+
+builder.Services.AddMassTransit(x =>
+{
+    x.AddConsumer<TradingSystem.Worker.Consumers.ProcessTradeConsumer>();
+    x.UsingRabbitMq((context, cfg) =>
+    {
+        cfg.Host(rabbitMQHost, "/", h => {
+            h.Username(rabbitMQUsername);
+            h.Password(rabbitMQpassword);
+        });
+
+        // ADDED: Bind the Consumer to the KEDA queue
+        cfg.ReceiveEndpoint("process-trade-queue", e =>
+        {
+            e.ConfigureConsumer<TradingSystem.Worker.Consumers.ProcessTradeConsumer>(context);
+        });
+
+        cfg.ConfigureEndpoints(context);
+    });
+});
+
+
 
 builder.Services.AddQuartz(q =>
 {

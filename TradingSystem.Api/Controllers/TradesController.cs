@@ -5,6 +5,10 @@ using System.Threading.Tasks;
 using TradingSystem.Domain.Entities;
 using TradingSystem.Infrastructure.Data;
 using Microsoft.EntityFrameworkCore;
+using System;
+using System.Threading.Tasks;
+using MassTransit;
+using TradingSystem.Application.Commands;
 
 namespace TradingSystem.Api.Controllers
 {
@@ -14,11 +18,14 @@ namespace TradingSystem.Api.Controllers
     {
         private readonly IDistributedCache _redisCache;
         private readonly TradingDbContext _dbContext;
+        private readonly IPublishEndpoint _publishEndpoint;
 
-        public TradesController(IDistributedCache redisCache, TradingDbContext dbContext)
+
+        public TradesController(IDistributedCache redisCache, TradingDbContext dbContext, IPublishEndpoint publishEndpoint)
         {
             _redisCache = redisCache;
             _dbContext = dbContext;
+            _publishEndpoint = publishEndpoint;
         }
 
         [HttpPost]
@@ -48,25 +55,41 @@ namespace TradingSystem.Api.Controllers
             return Accepted(new { Message = "Bid received, buffered in Redis, and saved to MySQL." });
         }
 
-
-        [HttpGet("price/{ticker}/{serverId}")]
-        public async Task<IActionResult> GetRealTimePrice(string ticker, string serverId, [FromServices] TradingDbContext dbContext)
+        [HttpPost]
+        public async Task<IActionResult> PlaceBid2(TradeOrder order)
         {
-            var stockPrice = await dbContext.StockPrices.FirstOrDefaultAsync(s => s.Ticker == ticker && s.ServerId == serverId);
+            // 1. Ensure order is unprocessed initially
+            order.IsProcessed = false;
 
-            if (stockPrice == null)
-            {
-                return NotFound(new { Message = $"No active market data found for {ticker} on {serverId}." });
-            }
+            // 2. Insert safely into MySQL (No locks on the StockPrice table!)
+            _dbContext.TradeOrders.Add(order);
+            await _dbContext.SaveChangesAsync();
 
-            return Ok(new
-            {
-                Ticker = stockPrice.Ticker,
-                Server = stockPrice.ServerId,
-                CurrentPrice = stockPrice.CurrentPrice,
-                TotalVolume = stockPrice.BuyVolume,
-                LastUpdated = stockPrice.LastUpdatedAt
-            });
+            // 3. Publish real-time event to RabbitMQ
+            await _publishEndpoint.Publish(new ProcessTradeCommand { OrderId = order.Id });
+
+            return Accepted(new { Message = "Bid received and queued for real-time processing." });
         }
+
+
+        //[HttpGet("price/{ticker}/{serverId}")]
+        //public async Task<IActionResult> GetRealTimePrice(string ticker, string serverId, [FromServices] TradingDbContext dbContext)
+        //{
+        //    var stockPrice = await dbContext.StockPrices.FirstOrDefaultAsync(s => s.Ticker == ticker && s.ServerId == serverId);
+
+        //    if (stockPrice == null)
+        //    {
+        //        return NotFound(new { Message = $"No active market data found for {ticker} on {serverId}." });
+        //    }
+
+        //    return Ok(new
+        //    {
+        //        Ticker = stockPrice.Ticker,
+        //        Server = stockPrice.ServerId,
+        //        CurrentPrice = stockPrice.CurrentPrice,
+        //        TotalVolume = stockPrice.BuyVolume,
+        //        LastUpdated = stockPrice.LastUpdatedAt
+        //    });
+        //}
     }
 }

@@ -7,8 +7,11 @@ USE tradingsystem;
 CREATE TABLE TradeOrders (
     Id CHAR(36) NOT NULL PRIMARY KEY,
     StockTicker VARCHAR(10) NOT NULL,
-    BidAmount DECIMAL(18, 2) NOT NULL,
+    BidAmount DECIMAL(18, 4) NOT NULL,
+    Volume DECIMAL(18, 4) NOT NULL,
+    IsBuy BOOLEAN NOT NULL,
     ServerId VARCHAR(50) NOT NULL,
+    IsProcessed BOOLEAN NOT NULL DEFAULT FALSE,
     RowVersion TIMESTAMP(6) DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)
 ) ENGINE=InnoDB;
 
@@ -20,14 +23,12 @@ CREATE TABLE TradingServers (
 ) ENGINE=InnoDB;
 
 CREATE TABLE StockPrices (
-    Ticker VARCHAR(10) NOT NULL,
-    ServerId VARCHAR(50) NOT NULL,
+    Ticker VARCHAR(10) NOT NULL PRIMARY KEY,
     CurrentPrice DECIMAL(18, 4) NOT NULL,
+    TotalStockVolume DECIMAL(18, 4) NOT NULL,
     BuyVolume DECIMAL(18, 4) NOT NULL DEFAULT 0,
     SellVolume DECIMAL(18, 4) NOT NULL DEFAULT 0,
-    LastUpdatedAt TIMESTAMP(6) DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
-    PRIMARY KEY (Ticker, ServerId),
-    FOREIGN KEY (ServerId) REFERENCES TradingServers(Id)
+    RowVersion TIMESTAMP(6) DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)
 ) ENGINE=InnoDB;
 
 CREATE TABLE JobExecutionHistories (
@@ -43,11 +44,18 @@ CREATE TABLE JobExecutionHistories (
 -- ====================================================================
 -- 2. SEED DUMMY DATA FOR ORCHESTRATOR
 -- ====================================================================
-INSERT INTO TradingServers (Id, ServerName, IsEnabled) VALUES ('ServerA', 'US-East Trading Node', 1);
-INSERT INTO TradingServers (Id, ServerName, IsEnabled) VALUES ('ServerB', 'EU-West Trading Node', 1);
+-- Insert Servers
+INSERT INTO TradingServers (Id, ServerName, IsEnabled) VALUES ('ServerA', 'US-East Node', 1);
+INSERT INTO TradingServers (Id, ServerName, IsEnabled) VALUES ('ServerB', 'EU-West Node', 1);
 
-INSERT INTO StockPrices (Ticker, ServerId, CurrentPrice) VALUES ('AAPL', 'ServerA', 150.00);
-INSERT INTO StockPrices (Ticker, ServerId, CurrentPrice) VALUES ('AAPL', 'ServerB', 150.00);
+-- Insert Initial APLD Stock (150 Price, 2000 Volume)
+INSERT INTO StockPrices (Ticker, CurrentPrice, TotalStockVolume) VALUES ('APLD', 150.00, 2000.00);
+INSERT INTO StockPrices (Ticker, CurrentPrice, TotalStockVolume) VALUES ('MSFT', 389.00, 3000.00);
+INSERT INTO StockPrices (Ticker, CurrentPrice, TotalStockVolume) VALUES ('NVDA', 170.00, 50000.00);
+INSERT INTO StockPrices (Ticker, CurrentPrice, TotalStockVolume) VALUES ('AMZN', 189.00, 31000.00);
+INSERT INTO StockPrices (Ticker, CurrentPrice, TotalStockVolume) VALUES ('MU', 380.00, 8500.00);
+
+
 
 -- ====================================================================
 -- 3. QUARTZ.NET CLUSTERING TABLES (MySQL InnoDB)

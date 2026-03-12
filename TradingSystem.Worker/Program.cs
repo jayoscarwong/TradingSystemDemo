@@ -34,7 +34,7 @@ builder.ConfigureServices((hostContext, services) =>
 
     services.AddMassTransit(x =>
     {
-        x.AddConsumer<TradingSystem.Worker.Consumers.FetchStockPriceConsumer>();
+        x.AddConsumer<TradingSystem.Worker.Consumers.ProcessTradeConsumer>();
         x.UsingRabbitMq((context, cfg) =>
         {
             cfg.Host(rabbitMQHost, "/", h => {
@@ -43,9 +43,9 @@ builder.ConfigureServices((hostContext, services) =>
             });
 
             // ADDED: Bind the Consumer to the KEDA queue
-            cfg.ReceiveEndpoint("fetch-stock-price-queue", e =>
+            cfg.ReceiveEndpoint("process-trade-queue", e =>
             {
-                e.ConfigureConsumer<TradingSystem.Worker.Consumers.FetchStockPriceConsumer>(context);
+                e.ConfigureConsumer<TradingSystem.Worker.Consumers.ProcessTradeConsumer>(context);
             });
 
             cfg.ConfigureEndpoints(context);
