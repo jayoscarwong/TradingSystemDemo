@@ -34,13 +34,26 @@ builder.ConfigureServices((hostContext, services) =>
 
     services.AddMassTransit(x =>
     {
+        // 1. Register the new consumer
+        x.AddConsumer<TradingSystem.Worker.Consumers.FetchStockPriceConsumer>();
+
         x.UsingRabbitMq((context, cfg) =>
         {
-            cfg.Host(rabbitMQHost, "/", h =>
-            {
-                h.Username(rabbitMQUsername);
-                h.Password(rabbitMQpassword);
+            var host = rabbitMQHost ?? "tradingsystem-rabbitmq";
+            var user = rabbitMQUsername ?? "guest";
+            var pass = rabbitMQpassword ?? "guest";
+
+            cfg.Host(host, "/", h => {
+                h.Username(user);
+                h.Password(pass);
             });
+
+            // 2. Configure the specific Receive Endpoint (Queue) for this consumer
+            cfg.ReceiveEndpoint("fetch-stock-price-queue", e =>
+            {
+                e.ConfigureConsumer<TradingSystem.Worker.Consumers.FetchStockPriceConsumer>(context);
+            });
+
             cfg.ConfigureEndpoints(context);
         });
     });
