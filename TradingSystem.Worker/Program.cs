@@ -71,7 +71,8 @@ builder.ConfigureServices((hostContext, services) =>
         q.AddTrigger(opts => opts
           .ForJob(jobKey)
           .WithIdentity("MasterOrchestratorTrigger")
-          .WithCronSchedule("0 0 * * * ?")); // Runs every hour to check for new/disabled servers
+          .WithCronSchedule("0 0/5 * * * ?")); //Every 5 minutes to ensure we catch any missed executions and keep the system in sync. We can adjust this frequency as needed.
+        // .WithCronSchedule("0 0 * * * ?")); // Runs every hour to check for new/disabled servers
     });
 
     services.AddQuartzHostedService(options =>
