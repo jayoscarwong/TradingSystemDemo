@@ -16,8 +16,8 @@ namespace TradingSystem.Worker.Jobs
 
         public async Task Execute(IJobExecutionContext context)
         {
-            var serverId = context.JobDetail.JobDataMap.GetString("ServerId");
-            
+            var serverId = context.JobDetail.JobDataMap.GetInt("ServerId");
+
             await _publishEndpoint.Publish(new FetchStockPriceCommand 
             { 
                 Ticker = "AAPL", 

@@ -10,13 +10,13 @@ CREATE TABLE TradeOrders (
     BidAmount DECIMAL(18, 4) NOT NULL,
     Volume DECIMAL(18, 4) NOT NULL,
     IsBuy BOOLEAN NOT NULL,
-    ServerId VARCHAR(50) NOT NULL,
+    ServerId INT NOT NULL, -- Changed to INT
     IsProcessed BOOLEAN NOT NULL DEFAULT FALSE,
     RowVersion TIMESTAMP(6) DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)
 ) ENGINE=InnoDB;
 
 CREATE TABLE TradingServers (
-    Id VARCHAR(50) NOT NULL PRIMARY KEY,
+    Id INT NOT NULL PRIMARY KEY, -- Changed to INT
     ServerName VARCHAR(100) NOT NULL,
     IsEnabled BOOLEAN NOT NULL DEFAULT TRUE,
     LastPingAt TIMESTAMP(6) NULL
@@ -28,13 +28,14 @@ CREATE TABLE StockPrices (
     TotalStockVolume DECIMAL(18, 4) NOT NULL,
     BuyVolume DECIMAL(18, 4) NOT NULL DEFAULT 0,
     SellVolume DECIMAL(18, 4) NOT NULL DEFAULT 0,
+    LastUpdatedAt TIMESTAMP(6) DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6), -- Added back!
     RowVersion TIMESTAMP(6) DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)
 ) ENGINE=InnoDB;
 
 CREATE TABLE JobExecutionHistories (
     Id CHAR(36) NOT NULL PRIMARY KEY,
     JobName VARCHAR(200) NOT NULL,
-    ServerId VARCHAR(50) NULL,
+    ServerId INT NULL, -- Changed to INT
     Status VARCHAR(50) NOT NULL,
     StartTime TIMESTAMP(6) NOT NULL,
     EndTime TIMESTAMP(6) NOT NULL,
@@ -44,17 +45,19 @@ CREATE TABLE JobExecutionHistories (
 -- ====================================================================
 -- 2. SEED DUMMY DATA FOR ORCHESTRATOR
 -- ====================================================================
--- Insert Servers
-INSERT INTO TradingServers (Id, ServerName, IsEnabled) VALUES ('ServerA', 'US-East Node', 1);
-INSERT INTO TradingServers (Id, ServerName, IsEnabled) VALUES ('ServerB', 'EU-West Node', 1);
+-- Insert Servers using Integer IDs
+INSERT INTO TradingServers (Id, ServerName, IsEnabled) VALUES (1, 'US-East Node', 1);
+INSERT INTO TradingServers (Id, ServerName, IsEnabled) VALUES (2, 'EU-West Node', 1);
 
 -- Insert Initial APLD Stock (150 Price, 2000 Volume)
+INSERT INTO StockPrices (Ticker, CurrentPrice, TotalStockVolume) VALUES ('AAPL', 150.00, 2000.00);
 INSERT INTO StockPrices (Ticker, CurrentPrice, TotalStockVolume) VALUES ('APLD', 150.00, 2000.00);
 INSERT INTO StockPrices (Ticker, CurrentPrice, TotalStockVolume) VALUES ('MSFT', 389.00, 3000.00);
 INSERT INTO StockPrices (Ticker, CurrentPrice, TotalStockVolume) VALUES ('NVDA', 170.00, 50000.00);
 INSERT INTO StockPrices (Ticker, CurrentPrice, TotalStockVolume) VALUES ('AMZN', 189.00, 31000.00);
 INSERT INTO StockPrices (Ticker, CurrentPrice, TotalStockVolume) VALUES ('MU', 380.00, 8500.00);
-
+INSERT INTO StockPrices (Ticker, CurrentPrice, TotalStockVolume) VALUES ('CRCL', 69.00, 1500.00);
+INSERT INTO StockPrices (Ticker, CurrentPrice, TotalStockVolume) VALUES ('COIN', 198.00, 2000.00);
 
 
 -- ====================================================================

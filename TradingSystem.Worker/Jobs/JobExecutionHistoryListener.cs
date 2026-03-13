@@ -32,7 +32,7 @@ namespace TradingSystem.Worker.Jobs
         public async Task JobWasExecuted(IJobExecutionContext context, JobExecutionException jobException, CancellationToken cancellationToken = default)
         {
             var status = jobException == null ? "Completed" : "Failed";
-            var serverId = context.JobDetail.JobDataMap.GetString("ServerId");
+            var serverId = context.JobDetail.JobDataMap.GetInt("ServerId");
 
             var history = new JobExecutionHistory
             {
