@@ -133,10 +133,10 @@ namespace TradingSystem.Api.Controllers
                 return Conflict($"Task '{request.JobName}' already exists.");
             }
 
-            // Tell Quartz to use the SymbolDataPullJob we created in the Worker
             var job = JobBuilder.Create(Type.GetType("TradingSystem.Worker.Jobs.SymbolDataPullJob, TradingSystem.Worker"))
                 .WithIdentity(jobKey)
                 .UsingJobData("ServerId", request.ServerId)
+                .UsingJobData("Ticker", request.Ticker) // <-- Inject dynamic ticker into job state
                 .Build();
 
             var trigger = TriggerBuilder.Create()

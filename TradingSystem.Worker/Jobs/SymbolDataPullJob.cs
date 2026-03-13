@@ -16,12 +16,15 @@ namespace TradingSystem.Worker.Jobs
 
         public async Task Execute(IJobExecutionContext context)
         {
-            var serverId = context.JobDetail.JobDataMap.GetInt("ServerId");
+            int serverId = context.JobDetail.JobDataMap.GetInt("ServerId");
 
-            await _publishEndpoint.Publish(new FetchStockPriceCommand 
-            { 
-                Ticker = "AAPL", 
-                ServerId = serverId 
+            // FIX: Extract the Ticker dynamically from the JobDataMap
+            string ticker = context.JobDetail.JobDataMap.GetString("Ticker") ?? "UNKNOWN";
+
+            await _publishEndpoint.Publish(new FetchStockPriceCommand
+            {
+                Ticker = ticker,
+                ServerId = serverId
             });
         }
     }

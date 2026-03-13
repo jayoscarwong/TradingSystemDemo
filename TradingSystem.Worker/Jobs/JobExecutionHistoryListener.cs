@@ -29,10 +29,17 @@ namespace TradingSystem.Worker.Jobs
             return Task.CompletedTask;
         }
 
-        public async Task JobWasExecuted(IJobExecutionContext context, JobExecutionException jobException, CancellationToken cancellationToken = default)
+        // FIX: Added '?' to JobExecutionException to match the interface
+        public async Task JobWasExecuted(IJobExecutionContext context, JobExecutionException? jobException, CancellationToken cancellationToken = default)
         {
             var status = jobException == null ? "Completed" : "Failed";
-            var serverId = context.JobDetail.JobDataMap.GetInt("ServerId");
+
+            // FIX: Safely extract the ServerId as an int, or leave it null if it's a global job (like MasterOrchestrator)
+            int? serverId = null;
+            if (context.JobDetail.JobDataMap.ContainsKey("ServerId"))
+            {
+                serverId = context.JobDetail.JobDataMap.GetInt("ServerId");
+            }
 
             var history = new JobExecutionHistory
             {
@@ -45,7 +52,6 @@ namespace TradingSystem.Worker.Jobs
                 ErrorMessage = jobException?.Message
             };
 
-            // Use a scoped factory because DbContext is Scoped, but Quartz Listeners are Singleton
             using var scope = _scopeFactory.CreateScope();
             var dbContext = scope.ServiceProvider.GetRequiredService<TradingDbContext>();
 
