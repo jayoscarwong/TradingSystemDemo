@@ -2,7 +2,7 @@ using System.ComponentModel.DataAnnotations;
 
 namespace TradingSystem.Auth.DTOs
 {
-    public sealed class CreateTradeAccountRequest
+    public sealed class RegisterTradeAccountRequest
     {
         [Required]
         [MaxLength(200)]
@@ -21,8 +21,8 @@ namespace TradingSystem.Auth.DTOs
         [MinLength(8)]
         public required string Password { get; set; }
 
-        public string[]? GroupNames { get; set; }
-
-        public bool StartDisabled { get; set; }
+        [Required]
+        [MaxLength(50)]
+        public required string RequestedGroup { get; set; }
     }
 }

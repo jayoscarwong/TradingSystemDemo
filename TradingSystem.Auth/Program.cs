@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Security.Claims;
 using System.Text;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -33,6 +34,13 @@ builder.Services.AddSwaggerGen(options =>
             new List<string>()
         }
     });
+
+    var xmlFile = $"{Assembly.GetExecutingAssembly().GetName().Name}.xml";
+    var xmlPath = Path.Combine(AppContext.BaseDirectory, xmlFile);
+    if (File.Exists(xmlPath))
+    {
+        options.IncludeXmlComments(xmlPath, includeControllerXmlComments: true);
+    }
 });
 
 builder.Services.Configure<AuthenticationSettings>(builder.Configuration.GetSection("Authentication"));
@@ -52,6 +60,7 @@ builder.Services.AddStackExchangeRedisCache(options =>
 
 builder.Services.AddScoped<PasswordHashService>();
 builder.Services.AddScoped<JwtTokenService>();
+builder.Services.AddScoped<RefreshTokenService>();
 builder.Services.AddScoped<TradeSessionCacheService>();
 builder.Services.AddHostedService<IdentityBootstrapService>();
 
@@ -81,7 +90,7 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             OnTokenValidated = async context =>
             {
                 var username = context.Principal?.Identity?.Name;
-                var sessionId = context.Principal?.FindFirst("sid")?.Value;
+                var sessionId = context.Principal?.FindFirst(CustomClaimTypes.SessionId)?.Value;
                 if (string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(sessionId))
                 {
                     context.Fail("Session claims are missing.");
@@ -101,7 +110,7 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
 builder.Services.AddAuthorization(options =>
 {
     options.AddPolicy(AuthorizationPolicies.AccountsManage, policy =>
-        policy.RequireClaim("permission", PermissionCodes.AccountsManage));
+        policy.RequireClaim(CustomClaimTypes.Permission, PermissionCodes.AccountsManage));
 });
 
 var app = builder.Build();

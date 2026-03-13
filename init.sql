@@ -59,6 +59,19 @@ CREATE TABLE IF NOT EXISTS TradeAccountGroups (
     CONSTRAINT FK_TradeAccountGroups_TradeUserGroups FOREIGN KEY (TradeUserGroupId) REFERENCES TradeUserGroups(Id) ON DELETE CASCADE
 ) ENGINE=InnoDB;
 
+CREATE TABLE IF NOT EXISTS TradeRefreshTokens (
+    Id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    TradeAccountId BIGINT NOT NULL,
+    TokenHash VARCHAR(64) NOT NULL,
+    CreatedAt TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    ExpiresAt TIMESTAMP(6) NOT NULL,
+    RevokedAt TIMESTAMP(6) NULL,
+    ReplacedByTokenHash VARCHAR(64) NULL,
+    UNIQUE KEY UX_TradeRefreshTokens_TokenHash (TokenHash),
+    INDEX IX_TradeRefreshTokens_TradeAccountId_ExpiresAt (TradeAccountId, ExpiresAt),
+    CONSTRAINT FK_TradeRefreshTokens_TradeAccounts FOREIGN KEY (TradeAccountId) REFERENCES TradeAccounts(Id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
 CREATE TABLE IF NOT EXISTS TradeGroupPermissions (
     TradeUserGroupId INT NOT NULL,
     TradePermissionId INT NOT NULL,
@@ -157,10 +170,31 @@ ON DUPLICATE KEY UPDATE
 
 INSERT INTO StockPrices (Ticker, CurrentPrice, TotalStockVolume, AvailableVolume, BuyVolume, SellVolume, PendingBuyVolume, PendingSellVolume)
 VALUES
-    ('AMZN', 150.00, 2000.00, 2000.00, 0, 0, 0, 0),
-    ('AAPL', 190.00, 3000.00, 3000.00, 0, 0, 0, 0),
-    ('MSFT', 420.00, 2500.00, 2500.00, 0, 0, 0, 0),
-    ('NVDA', 860.00, 1800.00, 1800.00, 0, 0, 0, 0)
+    ('MSFT', 423.00, 12000.00, 12000.00, 0, 0, 0, 0),
+    ('AAPL', 191.00, 11500.00, 11500.00, 0, 0, 0, 0),
+    ('NVDA', 878.00, 11000.00, 11000.00, 0, 0, 0, 0),
+    ('AMZN', 178.00, 10500.00, 10500.00, 0, 0, 0, 0),
+    ('GOOGL', 173.00, 9800.00, 9800.00, 0, 0, 0, 0),
+    ('META', 515.00, 9300.00, 9300.00, 0, 0, 0, 0),
+    ('AVGO', 1325.00, 7600.00, 7600.00, 0, 0, 0, 0),
+    ('TSLA', 192.00, 7200.00, 7200.00, 0, 0, 0, 0),
+    ('JPM', 198.00, 6800.00, 6800.00, 0, 0, 0, 0),
+    ('V', 289.00, 6500.00, 6500.00, 0, 0, 0, 0),
+    ('WMT', 62.00, 6300.00, 6300.00, 0, 0, 0, 0),
+    ('XOM', 109.00, 6000.00, 6000.00, 0, 0, 0, 0),
+    ('COST', 735.00, 5600.00, 5600.00, 0, 0, 0, 0),
+    ('NFLX', 610.00, 5200.00, 5200.00, 0, 0, 0, 0),
+    ('AMD', 182.00, 5000.00, 5000.00, 0, 0, 0, 0),
+    ('ORCL', 142.00, 4700.00, 4700.00, 0, 0, 0, 0),
+    ('CRM', 318.00, 4300.00, 4300.00, 0, 0, 0, 0),
+    ('ADBE', 571.00, 4100.00, 4100.00, 0, 0, 0, 0),
+    ('COIN', 248.00, 3900.00, 3900.00, 0, 0, 0, 0),
+    ('CRCL', 86.50, 3600.00, 3600.00, 0, 0, 0, 0),
+    ('PLTR', 33.00, 3500.00, 3500.00, 0, 0, 0, 0),
+    ('SHOP', 92.00, 3300.00, 3300.00, 0, 0, 0, 0),
+    ('UBER', 82.00, 3200.00, 3200.00, 0, 0, 0, 0),
+    ('QCOM', 177.00, 3000.00, 3000.00, 0, 0, 0, 0),
+    ('INTC', 41.00, 2800.00, 2800.00, 0, 0, 0, 0)
 ON DUPLICATE KEY UPDATE
     CurrentPrice = VALUES(CurrentPrice),
     TotalStockVolume = VALUES(TotalStockVolume),
@@ -185,7 +219,7 @@ INSERT INTO TradeUserGroups (Id, Name, Description, IsSystemGroup)
 VALUES
     (1, 'Administrators', 'Can manage accounts, tasks, and trading operations.', 1),
     (2, 'Traders', 'Can place trades and inspect live operational status.', 1),
-    (3, 'Observers', 'Can view job status and live prices.', 1)
+    (3, 'Visitors', 'Can view job status and live prices.', 1)
 ON DUPLICATE KEY UPDATE
     Name = VALUES(Name),
     Description = VALUES(Description),

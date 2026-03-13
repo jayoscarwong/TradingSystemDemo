@@ -5,6 +5,8 @@
       <Nullable>enable</Nullable>
       <ImplicitUsings>enable</ImplicitUsings>
       <ErrorOnDuplicatePublishOutputFiles>false</ErrorOnDuplicatePublishOutputFiles>
+      <GenerateDocumentationFile>true</GenerateDocumentationFile>
+      <NoWarn>$(NoWarn);1591</NoWarn>
     </PropertyGroup>
   
   

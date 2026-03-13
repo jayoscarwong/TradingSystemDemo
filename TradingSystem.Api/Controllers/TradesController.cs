@@ -33,6 +33,24 @@ namespace TradingSystem.Api.Controllers
             _redisCache = redisCache;
         }
 
+        /// <summary>
+        /// Places an authenticated trade order using a client-supplied idempotency GUID.
+        /// </summary>
+        /// <remarks>
+        /// Sample request:
+        ///
+        ///     POST /api/Trades
+        ///     {
+        ///       "orderId": "5f9042c1-f4c9-4fd9-8d3a-0ec1ecb9e3c5",
+        ///       "stockTicker": "AAPL",
+        ///       "bidAmount": 191.2500,
+        ///       "volume": 25,
+        ///       "isBuy": true,
+        ///       "serverId": 1
+        ///     }
+        ///
+        /// Reusing the same <c>orderId</c> with the exact same payload is treated as a safe retry.
+        /// </remarks>
         [HttpPost]
         [Authorize(Policy = AuthorizationPolicies.TradesPlace)]
         public async Task<IActionResult> PlaceBid([FromBody] PlaceBidRequest request)
@@ -139,6 +157,14 @@ namespace TradingSystem.Api.Controllers
             });
         }
 
+        /// <summary>
+        /// Reads the latest cached price snapshot for a ticker, falling back to MySQL on a cache miss.
+        /// </summary>
+        /// <remarks>
+        /// Sample request:
+        ///
+        ///     GET /api/Trades/price/AAPL
+        /// </remarks>
         [HttpGet("price/{ticker}")]
         [Authorize(Policy = AuthorizationPolicies.PricesRead)]
         public async Task<IActionResult> GetRealTimePrice(string ticker)

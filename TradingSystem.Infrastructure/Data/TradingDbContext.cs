@@ -13,6 +13,7 @@ namespace TradingSystem.Infrastructure.Data
         public DbSet<TradePermission> TradePermissions { get; set; }
         public DbSet<TradeAccountGroup> TradeAccountGroups { get; set; }
         public DbSet<TradeGroupPermission> TradeGroupPermissions { get; set; }
+        public DbSet<TradeRefreshToken> TradeRefreshTokens { get; set; }
         public DbSet<TradeOrder> TradeOrders { get; set; }
         public DbSet<TradingServer> TradingServers { get; set; }
         public DbSet<StockPrice> StockPrices { get; set; }
@@ -113,6 +114,30 @@ namespace TradingSystem.Infrastructure.Data
 
                 entity.HasIndex(account => account.Email)
                     .IsUnique();
+            });
+
+            modelBuilder.Entity<TradeRefreshToken>(entity =>
+            {
+                entity.HasKey(token => token.Id);
+
+                entity.Property(token => token.TokenHash)
+                    .HasMaxLength(64);
+
+                entity.Property(token => token.ReplacedByTokenHash)
+                    .HasMaxLength(64);
+
+                entity.Property(token => token.CreatedAt)
+                    .HasDefaultValueSql("CURRENT_TIMESTAMP(6)");
+
+                entity.HasIndex(token => token.TokenHash)
+                    .IsUnique();
+
+                entity.HasIndex(token => new { token.TradeAccountId, token.ExpiresAt });
+
+                entity.HasOne(token => token.TradeAccount)
+                    .WithMany(account => account.RefreshTokens)
+                    .HasForeignKey(token => token.TradeAccountId)
+                    .OnDelete(DeleteBehavior.Cascade);
             });
 
             modelBuilder.Entity<TradeUserGroup>(entity =>

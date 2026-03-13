@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Security.Claims;
 using System.Text;
 using MassTransit;
@@ -36,6 +37,13 @@ builder.Services.AddSwaggerGen(options =>
             new List<string>()
         }
     });
+
+    var xmlFile = $"{Assembly.GetExecutingAssembly().GetName().Name}.xml";
+    var xmlPath = Path.Combine(AppContext.BaseDirectory, xmlFile);
+    if (File.Exists(xmlPath))
+    {
+        options.IncludeXmlComments(xmlPath, includeControllerXmlComments: true);
+    }
 });
 
 builder.Services.Configure<AuthenticationSettings>(builder.Configuration.GetSection("Authentication"));
@@ -80,7 +88,7 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
             OnTokenValidated = async context =>
             {
                 var username = context.Principal?.Identity?.Name;
-                var sessionId = context.Principal?.FindFirst("sid")?.Value;
+                var sessionId = context.Principal?.FindFirst(CustomClaimTypes.SessionId)?.Value;
                 if (string.IsNullOrWhiteSpace(username) || string.IsNullOrWhiteSpace(sessionId))
                 {
                     context.Fail("Session claims are missing.");
@@ -100,13 +108,13 @@ builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
 builder.Services.AddAuthorization(options =>
 {
     options.AddPolicy(AuthorizationPolicies.TasksRead, policy =>
-        policy.RequireClaim("permission", PermissionCodes.TasksRead));
+        policy.RequireClaim(CustomClaimTypes.Permission, PermissionCodes.TasksRead));
     options.AddPolicy(AuthorizationPolicies.TasksManage, policy =>
-        policy.RequireClaim("permission", PermissionCodes.TasksManage));
+        policy.RequireClaim(CustomClaimTypes.Permission, PermissionCodes.TasksManage));
     options.AddPolicy(AuthorizationPolicies.PricesRead, policy =>
-        policy.RequireClaim("permission", PermissionCodes.PricesRead));
+        policy.RequireClaim(CustomClaimTypes.Permission, PermissionCodes.PricesRead));
     options.AddPolicy(AuthorizationPolicies.TradesPlace, policy =>
-        policy.RequireClaim("permission", PermissionCodes.TradesPlace));
+        policy.RequireClaim(CustomClaimTypes.Permission, PermissionCodes.TradesPlace));
 });
 
 var rabbitMQSettings = builder.Configuration.GetSection("RabbitMQ");
