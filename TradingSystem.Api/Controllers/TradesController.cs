@@ -39,22 +39,28 @@ namespace TradingSystem.Api.Controllers
         [HttpPost]
         public async Task<IActionResult> PlaceBid([FromBody] PlaceBidRequest request)
         {
-            // Map the incoming DTO to the Database Entity
+            // 1. Idempotency Check: Did we already process this exact order?
+            var existingOrder = await _dbContext.TradeOrders.AsNoTracking().FirstOrDefaultAsync(x => x.Id == request.OrderId);
+            if (existingOrder != null)
+            {
+                return Ok(new { Message = "Order already received and is being processed." });
+            }
+
             var order = new TradeOrder
             {
-                Id = Guid.NewGuid(), // Handled by backend
+                Id = request.OrderId, // Use client's GUID
                 StockTicker = request.StockTicker,
                 BidAmount = request.BidAmount,
                 Volume = request.Volume,
                 IsBuy = request.IsBuy,
                 ServerId = request.ServerId,
-                IsProcessed = false // Handled by backend
-                // RowVersion is automatically handled by MySQL
+                IsProcessed = false
             };
 
             _dbContext.TradeOrders.Add(order);
             await _dbContext.SaveChangesAsync();
 
+            // 2. Publish to RabbitMQ
             await _publishEndpoint.Publish(new ProcessTradeCommand { OrderId = order.Id });
 
             return Accepted(new { Message = "Order received and queued for real-time processing." });

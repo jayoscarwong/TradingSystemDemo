@@ -19,7 +19,12 @@ namespace TradingSystem.Infrastructure.Data
                .IsRowVersion();
 
             modelBuilder.Entity<StockPrice>()
-                .HasKey(sp => new { sp.Ticker }); // Composite Key
+                .HasKey(sp => new { sp.Ticker });
+
+            // ADD THIS: Tell EF Core to use this for optimistic concurrency
+            modelBuilder.Entity<StockPrice>()
+                .Property(p => p.RowVersion)
+                .IsRowVersion();
         }
     }
 }
