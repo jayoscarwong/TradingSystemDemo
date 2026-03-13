@@ -102,6 +102,19 @@ CREATE TABLE IF NOT EXISTS TradeAccountGroups (
     PRIMARY KEY (TradeAccountId, TradeUserGroupId)
 ) ENGINE=InnoDB;
 
+CREATE TABLE IF NOT EXISTS TradeRefreshTokens (
+    Id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+    TradeAccountId BIGINT NOT NULL,
+    TokenHash VARCHAR(64) NOT NULL,
+    CreatedAt TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    ExpiresAt TIMESTAMP(6) NOT NULL,
+    RevokedAt TIMESTAMP(6) NULL,
+    ReplacedByTokenHash VARCHAR(64) NULL,
+    UNIQUE KEY UX_TradeRefreshTokens_TokenHash (TokenHash),
+    INDEX IX_TradeRefreshTokens_TradeAccountId_ExpiresAt (TradeAccountId, ExpiresAt),
+    CONSTRAINT FK_TradeRefreshTokens_TradeAccounts FOREIGN KEY (TradeAccountId) REFERENCES TradeAccounts(Id) ON DELETE CASCADE
+) ENGINE=InnoDB;
+
 CREATE TABLE IF NOT EXISTS TradeGroupPermissions (
     TradeUserGroupId INT NOT NULL,
     TradePermissionId INT NOT NULL,
@@ -252,6 +265,15 @@ ON DUPLICATE KEY UPDATE
     Description = VALUES(Description),
     IsSystemGroup = VALUES(IsSystemGroup);
 
+INSERT INTO TradeUserGroups (Name, Description, IsSystemGroup)
+SELECT 'Visitors', 'Can view job status and live prices.', 1
+FROM DUAL
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM TradeUserGroups
+    WHERE Name = 'Visitors'
+);
+
 INSERT INTO TradeGroupPermissions (TradeUserGroupId, TradePermissionId)
 VALUES
     (1, 1),
@@ -264,6 +286,16 @@ VALUES
     (2, 5),
     (3, 2),
     (3, 4)
+ON DUPLICATE KEY UPDATE
+    TradeUserGroupId = VALUES(TradeUserGroupId),
+    TradePermissionId = VALUES(TradePermissionId);
+
+INSERT INTO TradeGroupPermissions (TradeUserGroupId, TradePermissionId)
+SELECT groupLookup.Id, permissionLookup.Id
+FROM TradeUserGroups groupLookup
+JOIN TradePermissions permissionLookup
+    ON permissionLookup.Code IN ('tasks.read', 'prices.read')
+WHERE groupLookup.Name = 'Visitors'
 ON DUPLICATE KEY UPDATE
     TradeUserGroupId = VALUES(TradeUserGroupId),
     TradePermissionId = VALUES(TradePermissionId);
@@ -344,6 +376,42 @@ UPDATE StockPrices
 SET AvailableVolume = TotalStockVolume
 WHERE AvailableVolume = 0;
 
+INSERT INTO StockPrices (Ticker, CurrentPrice, TotalStockVolume, AvailableVolume, BuyVolume, SellVolume, PendingBuyVolume, PendingSellVolume)
+VALUES
+    ('MSFT', 423.00, 12000.00, 12000.00, 0, 0, 0, 0),
+    ('AAPL', 191.00, 11500.00, 11500.00, 0, 0, 0, 0),
+    ('NVDA', 878.00, 11000.00, 11000.00, 0, 0, 0, 0),
+    ('AMZN', 178.00, 10500.00, 10500.00, 0, 0, 0, 0),
+    ('GOOGL', 173.00, 9800.00, 9800.00, 0, 0, 0, 0),
+    ('META', 515.00, 9300.00, 9300.00, 0, 0, 0, 0),
+    ('AVGO', 1325.00, 7600.00, 7600.00, 0, 0, 0, 0),
+    ('TSLA', 192.00, 7200.00, 7200.00, 0, 0, 0, 0),
+    ('JPM', 198.00, 6800.00, 6800.00, 0, 0, 0, 0),
+    ('V', 289.00, 6500.00, 6500.00, 0, 0, 0, 0),
+    ('WMT', 62.00, 6300.00, 6300.00, 0, 0, 0, 0),
+    ('XOM', 109.00, 6000.00, 6000.00, 0, 0, 0, 0),
+    ('COST', 735.00, 5600.00, 5600.00, 0, 0, 0, 0),
+    ('NFLX', 610.00, 5200.00, 5200.00, 0, 0, 0, 0),
+    ('AMD', 182.00, 5000.00, 5000.00, 0, 0, 0, 0),
+    ('ORCL', 142.00, 4700.00, 4700.00, 0, 0, 0, 0),
+    ('CRM', 318.00, 4300.00, 4300.00, 0, 0, 0, 0),
+    ('ADBE', 571.00, 4100.00, 4100.00, 0, 0, 0, 0),
+    ('COIN', 248.00, 3900.00, 3900.00, 0, 0, 0, 0),
+    ('CRCL', 86.50, 3600.00, 3600.00, 0, 0, 0, 0),
+    ('PLTR', 33.00, 3500.00, 3500.00, 0, 0, 0, 0),
+    ('SHOP', 92.00, 3300.00, 3300.00, 0, 0, 0, 0),
+    ('UBER', 82.00, 3200.00, 3200.00, 0, 0, 0, 0),
+    ('QCOM', 177.00, 3000.00, 3000.00, 0, 0, 0, 0),
+    ('INTC', 41.00, 2800.00, 2800.00, 0, 0, 0, 0)
+ON DUPLICATE KEY UPDATE
+    CurrentPrice = VALUES(CurrentPrice),
+    TotalStockVolume = VALUES(TotalStockVolume),
+    AvailableVolume = VALUES(AvailableVolume),
+    BuyVolume = VALUES(BuyVolume),
+    SellVolume = VALUES(SellVolume),
+    PendingBuyVolume = VALUES(PendingBuyVolume),
+    PendingSellVolume = VALUES(PendingSellVolume);
+
 UPDATE TradeOrders
 SET TradeAccountId = 1
 WHERE TradeAccountId IS NULL;
@@ -368,6 +436,18 @@ CALL ApplyIndexIfMissing(
     'TradeOrders',
     'IX_TradeOrders_TradeAccountId_CreatedAt',
     'CREATE INDEX IX_TradeOrders_TradeAccountId_CreatedAt ON TradeOrders (TradeAccountId, CreatedAt)'
+);
+
+CALL ApplyIndexIfMissing(
+    'TradeRefreshTokens',
+    'UX_TradeRefreshTokens_TokenHash',
+    'CREATE UNIQUE INDEX UX_TradeRefreshTokens_TokenHash ON TradeRefreshTokens (TokenHash)'
+);
+
+CALL ApplyIndexIfMissing(
+    'TradeRefreshTokens',
+    'IX_TradeRefreshTokens_TradeAccountId_ExpiresAt',
+    'CREATE INDEX IX_TradeRefreshTokens_TradeAccountId_ExpiresAt ON TradeRefreshTokens (TradeAccountId, ExpiresAt)'
 );
 
 CALL ApplyIndexIfMissing(
@@ -428,6 +508,12 @@ CALL ApplyForeignKeyIfMissing(
     'TradeOrders',
     'FK_TradeOrders_TradeAccounts',
     'ALTER TABLE TradeOrders ADD CONSTRAINT FK_TradeOrders_TradeAccounts FOREIGN KEY (TradeAccountId) REFERENCES TradeAccounts(Id)'
+);
+
+CALL ApplyForeignKeyIfMissing(
+    'TradeRefreshTokens',
+    'FK_TradeRefreshTokens_TradeAccounts',
+    'ALTER TABLE TradeRefreshTokens ADD CONSTRAINT FK_TradeRefreshTokens_TradeAccounts FOREIGN KEY (TradeAccountId) REFERENCES TradeAccounts(Id) ON DELETE CASCADE'
 );
 
 CALL ApplyForeignKeyIfMissing(

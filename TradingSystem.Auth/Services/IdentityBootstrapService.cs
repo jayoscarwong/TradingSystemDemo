@@ -90,7 +90,7 @@ namespace TradingSystem.Auth.Services
                 },
                 new TradeUserGroup
                 {
-                    Name = TradeGroupNames.Observers,
+                    Name = TradeGroupNames.Visitors,
                     Description = "Can view job status and live prices.",
                     IsSystemGroup = true
                 }
@@ -117,6 +117,7 @@ namespace TradingSystem.Auth.Services
             {
                 [TradeGroupNames.Administrators] = PermissionCodes.All,
                 [TradeGroupNames.Traders] = new[] { PermissionCodes.TasksRead, PermissionCodes.PricesRead, PermissionCodes.TradesPlace },
+                [TradeGroupNames.Visitors] = new[] { PermissionCodes.TasksRead, PermissionCodes.PricesRead },
                 [TradeGroupNames.Observers] = new[] { PermissionCodes.TasksRead, PermissionCodes.PricesRead }
             };
 

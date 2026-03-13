@@ -49,9 +49,12 @@ The earlier revision had several mismatches against `BaseDesignProblem.txt` and 
 - Worker-side Quartz listeners update task status in MySQL so monitoring remains meaningful when workers scale out.
 - `TradingSystem.Auth` is a separate JWT issuer service.
 - Trade accounts, groups, permissions, and account-group mappings are stored in MySQL.
+- Self-registration supports `Traders` and `Visitors`, and those accounts stay disabled until an administrator enables them.
 - Login sessions are tracked in Valkey with a configurable 30-minute expiry.
+- Login now issues both an access token and a refresh token, and refresh tokens are rotated and stored in MySQL.
 - `POST /api/Trades` now requires a valid authenticated trade account and stores `TradeAccountId` on each order.
 - Admin users manage task schedules; non-admin users can still read job status and real-time prices according to their permissions.
+- `init.sql` now seeds 25 U.S. tickers with baseline prices and market-size-weighted starting volume.
 
 ## High-level architecture
 
@@ -104,7 +107,8 @@ sequenceDiagram
     User->>Auth: "POST /api/Auth/login"
     Auth->>Mysql: "Load TradeAccount + groups + permissions"
     Auth->>Cache: "Store login session for 30 minutes"
-    Auth-->>User: "JWT bearer token"
+    Auth->>Mysql: "Store refresh token hash"
+    Auth-->>User: "JWT bearer token + refresh token"
 
     User->>Api: "POST /api/Trades"
     Api->>Cache: "Validate session by username + sid"
@@ -245,7 +249,7 @@ flowchart TB
   - can read task status
   - can read prices
   - can place trades
-- `Observers`
+- `Visitors`
   - can read task status
   - can read prices
 
@@ -277,12 +281,16 @@ This is only for local demo bootstrap. Change it for anything beyond local testi
 ## Auth API surface
 
 - `POST /api/Auth/login`
+- `POST /api/Auth/refresh`
 - `POST /api/Auth/logout`
 - `GET /api/Auth/me`
+- `GET /api/TradeAccounts/me/status`
+- `POST /api/TradeAccounts/register`
 - `GET /api/TradeAccounts`
 - `GET /api/TradeAccounts/{id}`
 - `POST /api/TradeAccounts`
 - `PUT /api/TradeAccounts/{id}`
+- `PUT /api/TradeAccounts/{id}/enable`
 - `PUT /api/TradeAccounts/{id}/disable`
 - `DELETE /api/TradeAccounts/{id}`
 
@@ -374,24 +382,44 @@ $headers = @{ Authorization = "Bearer $token" }
 
 In Swagger UI, paste only `Bearer <token>` in the authorize dialog. Do not paste `Authorization = ...` and do not include quotes.
 
-### 5. Create a trader account
+### 5. Self-register a trader account
 
 ```powershell
 Invoke-RestMethod `
   -Method Post `
-  -Uri "http://localhost:8081/api/TradeAccounts" `
-  -Headers $headers `
+  -Uri "http://localhost:8081/api/TradeAccounts/register" `
   -ContentType "application/json" `
   -Body (@{
       name = "Demo Trader"
       username = "trader1"
       email = "trader1@tradingsystem.local"
       password = "Trader123!"
-      groupNames = @("Traders")
+      requestedGroup = "Traders"
   } | ConvertTo-Json)
 ```
 
-### 6. Place an authenticated idempotent order
+This returns a disabled account. Approve it as admin:
+
+```powershell
+Invoke-RestMethod `
+  -Method Put `
+  -Uri "http://localhost:8081/api/TradeAccounts/2/enable" `
+  -Headers $headers
+```
+
+### 6. Refresh an access token
+
+```powershell
+$refreshed = Invoke-RestMethod `
+  -Method Post `
+  -Uri "http://localhost:8081/api/Auth/refresh" `
+  -ContentType "application/json" `
+  -Body (@{
+      refreshToken = $login.refreshToken
+  } | ConvertTo-Json)
+```
+
+### 7. Place an authenticated idempotent order
 
 ```powershell
 $traderLogin = Invoke-RestMethod `
@@ -423,7 +451,7 @@ Invoke-RestMethod `
 
 Resend the same payload with the same `orderId` to verify idempotency.
 
-### 7. Inspect tasks
+### 8. Inspect tasks
 
 ```powershell
 Invoke-RestMethod -Method Get -Uri "http://localhost:8080/api/tasks" -Headers $headers
@@ -540,6 +568,64 @@ kind load docker-image tradingsystem-worker:local --name trading-system
 - API: [http://localhost:8080/swagger](http://localhost:8080/swagger)
 - Auth: [http://localhost:8081/swagger](http://localhost:8081/swagger)
 
+### Kind scaling validation workflow
+
+1. Confirm the control plane sees the autoscalers:
+
+```powershell
+kubectl get hpa -n trading-system
+kubectl get scaledobject -n trading-system
+kubectl get deploy -n trading-system
+```
+
+2. Watch the API and worker replicas:
+
+```powershell
+kubectl get pods -n trading-system -w
+kubectl get hpa -n trading-system -w
+kubectl get scaledobject -n trading-system -w
+```
+
+3. Run the local traffic simulator from this repository:
+
+```powershell
+dotnet run --project TestMultiPlaceOrder/TestMultiPlaceOrder.csproj
+```
+
+4. Inspect resource pressure and queue-driven scaling:
+
+```powershell
+kubectl top pods -n trading-system
+kubectl describe hpa tradingsystem-api -n trading-system
+kubectl describe scaledobject tradingsystem-worker -n trading-system
+```
+
+5. Check RabbitMQ backlog and worker drain behavior:
+
+```powershell
+kubectl logs deploy/tradingsystem-worker -n trading-system --tail=200
+kubectl logs deploy/tradingsystem-api -n trading-system --tail=200
+```
+
+The intended local behavior is:
+
+- `TradingSystem.Api` scales horizontally from request pressure through HPA.
+- `TradingSystem.Worker` scales horizontally from RabbitMQ backlog through KEDA.
+- Quartz clustering remains safe because the worker replicas share the same MySQL-backed Quartz store.
+
+## TestMultiPlaceOrder project
+
+`TestMultiPlaceOrder` is a separate console project that automates local concurrency checks.
+
+- It logs in as the seeded `admin` account.
+- It self-registers random `Traders` and `Visitors`.
+- It enables those accounts through the admin approval endpoint.
+- It logs the generated users in and captures bearer tokens.
+- Traders submit concurrent `POST /api/Trades` requests with random GUID idempotency keys.
+- Visitors submit concurrent read traffic to `GET /api/Trades/price/{ticker}` and `GET /api/Tasks/monitoring/overview`.
+
+Default settings live in [TestMultiPlaceOrder/appsettings.json](/C:/z/Hytech/oscarwmh/TestMultiPlaceOrder/appsettings.json). You can override them with environment variables prefixed with `TS_LOADTEST_`.
+
 ## Dependency and licensing policy
 
 For local development, the stack should stay on components that are free to run locally:
@@ -563,7 +649,6 @@ Valkey is used as the Redis-compatible cache so the sample keeps the Redis proto
 ## Remaining demo gaps
 
 - The pricing engine is illustrative, not a real limit-order book.
-- There is no refresh-token flow yet; login is access-token only.
 - Secrets in `docker-compose.yml` and `k8s/secrets.yaml` are demo defaults, not production secret management.
 - The local Kubernetes manifests are intentionally direct YAML for clarity; a production deployment would usually move this to Helm or Kustomize overlays.
 

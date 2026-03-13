@@ -24,6 +24,14 @@ namespace TradingSystem.Api.Controllers
             _quartzService = quartzService;
         }
 
+        /// <summary>
+        /// Lists scheduled tasks with filtering, pagination, and runtime-state search.
+        /// </summary>
+        /// <remarks>
+        /// Sample request:
+        ///
+        ///     GET /api/tasks?page=1&amp;pageSize=20&amp;taskType=SymbolDataPull&amp;runtimeStatus=Scheduled&amp;ticker=AAPL
+        /// </remarks>
         [HttpGet]
         public async Task<IActionResult> GetTasks(
             [FromQuery] string? name = null,
@@ -97,6 +105,14 @@ namespace TradingSystem.Api.Controllers
             });
         }
 
+        /// <summary>
+        /// Returns fleet-wide monitoring counts and the current status of all non-deleted tasks.
+        /// </summary>
+        /// <remarks>
+        /// Sample request:
+        ///
+        ///     GET /api/tasks/monitoring/overview
+        /// </remarks>
         [HttpGet("monitoring/overview")]
         public async Task<IActionResult> GetMonitoringOverview()
         {
@@ -117,6 +133,14 @@ namespace TradingSystem.Api.Controllers
             });
         }
 
+        /// <summary>
+        /// Returns one task and its recent execution history by numeric task ID.
+        /// </summary>
+        /// <remarks>
+        /// Sample request:
+        ///
+        ///     GET /api/tasks/1
+        /// </remarks>
         [HttpGet("{id:long}")]
         public async Task<IActionResult> GetTaskDetails(long id)
         {
@@ -143,6 +167,14 @@ namespace TradingSystem.Api.Controllers
             });
         }
 
+        /// <summary>
+        /// Returns runtime status, metrics, and recent history for one scheduled task.
+        /// </summary>
+        /// <remarks>
+        /// Sample request:
+        ///
+        ///     GET /api/tasks/1/status
+        /// </remarks>
         [HttpGet("{id:long}/status")]
         public async Task<IActionResult> GetTaskStatus(long id)
         {
@@ -189,6 +221,24 @@ namespace TradingSystem.Api.Controllers
             });
         }
 
+        /// <summary>
+        /// Creates a new Quartz-backed scheduled task owned by the REST task catalog.
+        /// </summary>
+        /// <remarks>
+        /// Sample request:
+        ///
+        ///     POST /api/tasks
+        ///     {
+        ///       "name": "Pull AAPL Every 15 Seconds",
+        ///       "description": "Fetches AAPL pricing for server 1.",
+        ///       "taskType": "SymbolDataPull",
+        ///       "scheduleType": "Simple",
+        ///       "intervalSeconds": 15,
+        ///       "repeatCount": -1,
+        ///       "serverId": 1,
+        ///       "ticker": "AAPL"
+        ///     }
+        /// </remarks>
         [HttpPost]
         [Authorize(Policy = AuthorizationPolicies.TasksManage)]
         public async Task<IActionResult> CreateTask([FromBody] CreateTaskRequest request, CancellationToken cancellationToken)
@@ -245,6 +295,20 @@ namespace TradingSystem.Api.Controllers
             return Created($"/api/tasks/{task.Id}", ToDetail(task));
         }
 
+        /// <summary>
+        /// Updates task metadata or schedule settings for an existing numeric task ID.
+        /// </summary>
+        /// <remarks>
+        /// Sample request:
+        ///
+        ///     PUT /api/tasks/7
+        ///     {
+        ///       "description": "Move AAPL polling to every 30 seconds.",
+        ///       "scheduleType": "Simple",
+        ///       "intervalSeconds": 30,
+        ///       "repeatCount": -1
+        ///     }
+        /// </remarks>
         [HttpPut("{id:long}")]
         [Authorize(Policy = AuthorizationPolicies.TasksManage)]
         public async Task<IActionResult> UpdateTask(long id, [FromBody] UpdateTaskRequest request, CancellationToken cancellationToken)
@@ -344,6 +408,14 @@ namespace TradingSystem.Api.Controllers
             return Ok(ToDetail(task));
         }
 
+        /// <summary>
+        /// Deletes a scheduled task from both the REST catalog and Quartz.
+        /// </summary>
+        /// <remarks>
+        /// Sample request:
+        ///
+        ///     DELETE /api/tasks/7
+        /// </remarks>
         [HttpDelete("{id:long}")]
         [Authorize(Policy = AuthorizationPolicies.TasksManage)]
         public async Task<IActionResult> DeleteTask(long id, CancellationToken cancellationToken)
@@ -372,6 +444,14 @@ namespace TradingSystem.Api.Controllers
             return Ok(new { Message = $"Task {id} was removed from the scheduler." });
         }
 
+        /// <summary>
+        /// Pauses one scheduled task without deleting its metadata or history.
+        /// </summary>
+        /// <remarks>
+        /// Sample request:
+        ///
+        ///     POST /api/tasks/7/shutdown
+        /// </remarks>
         [HttpPost("{id:long}/shutdown")]
         [Authorize(Policy = AuthorizationPolicies.TasksManage)]
         public async Task<IActionResult> ShutdownTask(long id, CancellationToken cancellationToken)
@@ -402,6 +482,14 @@ namespace TradingSystem.Api.Controllers
             return Ok(ToDetail(task));
         }
 
+        /// <summary>
+        /// Starts or resumes one scheduled task after it has been paused.
+        /// </summary>
+        /// <remarks>
+        /// Sample request:
+        ///
+        ///     POST /api/tasks/7/start
+        /// </remarks>
         [HttpPost("{id:long}/start")]
         [Authorize(Policy = AuthorizationPolicies.TasksManage)]
         public async Task<IActionResult> StartTask(long id, CancellationToken cancellationToken)
@@ -435,6 +523,14 @@ namespace TradingSystem.Api.Controllers
             return Ok(ToDetail(task));
         }
 
+        /// <summary>
+        /// Triggers an immediate one-off execution for a scheduled task.
+        /// </summary>
+        /// <remarks>
+        /// Sample request:
+        ///
+        ///     POST /api/tasks/7/run-now
+        /// </remarks>
         [HttpPost("{id:long}/run-now")]
         [Authorize(Policy = AuthorizationPolicies.TasksManage)]
         public async Task<IActionResult> RunNow(long id, CancellationToken cancellationToken)

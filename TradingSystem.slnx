@@ -8,6 +8,7 @@
     <File Path="TradingSystem.Api/appsettings.json" />
   </Folder>
   <Project Path="TradingSystem.Auth/TradingSystem.Auth.csproj" />
+  <Project Path="TestMultiPlaceOrder/TestMultiPlaceOrder.csproj" />
   <Project Path="TradingSystem.Domain\TradingSystem.Domain.csproj" />
   <Project Path="TradingSystem.Application\TradingSystem.Application.csproj" />
   <Project Path="TradingSystem.Infrastructure\TradingSystem.Infrastructure.csproj" />

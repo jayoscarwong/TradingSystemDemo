@@ -14,6 +14,7 @@ namespace TradingSystem.Domain.Entities
         public DateTime RowVersion { get; set; }
 
         public ICollection<TradeAccountGroup> AccountGroups { get; set; } = new List<TradeAccountGroup>();
+        public ICollection<TradeRefreshToken> RefreshTokens { get; set; } = new List<TradeRefreshToken>();
         public ICollection<TradeOrder> TradeOrders { get; set; } = new List<TradeOrder>();
     }
 }

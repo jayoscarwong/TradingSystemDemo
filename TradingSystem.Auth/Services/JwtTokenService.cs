@@ -5,6 +5,7 @@ using Microsoft.Extensions.Options;
 using Microsoft.IdentityModel.Tokens;
 using TradingSystem.Auth.Options;
 using TradingSystem.Domain.Entities;
+using TradingSystem.Domain.Security;
 
 namespace TradingSystem.Auth.Services
 {
@@ -33,11 +34,15 @@ namespace TradingSystem.Auth.Services
                 new(JwtRegisteredClaimNames.UniqueName, account.Username),
                 new(JwtRegisteredClaimNames.Email, account.Email),
                 new("display_name", account.Name),
-                new("sid", sessionId)
+                new(CustomClaimTypes.SessionId, sessionId)
             };
 
-            claims.AddRange(groups.Distinct(StringComparer.OrdinalIgnoreCase).Select(group => new Claim(ClaimTypes.Role, group)));
-            claims.AddRange(permissions.Distinct(StringComparer.OrdinalIgnoreCase).Select(permission => new Claim("permission", permission)));
+            claims.AddRange(groups.Distinct(StringComparer.OrdinalIgnoreCase).SelectMany(group => new[]
+            {
+                new Claim(ClaimTypes.Role, group),
+                new Claim(CustomClaimTypes.Group, group)
+            }));
+            claims.AddRange(permissions.Distinct(StringComparer.OrdinalIgnoreCase).Select(permission => new Claim(CustomClaimTypes.Permission, permission)));
 
             var signingCredentials = new SigningCredentials(
                 new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_settings.SigningKey)),
