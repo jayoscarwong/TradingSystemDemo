@@ -26,7 +26,7 @@ builder.Services.AddSwaggerGen(options =>
         Scheme = "bearer",
         BearerFormat = "JWT",
         In = ParameterLocation.Header,
-        Description = "Paste a JWT bearer token here."
+        Description = "Paste `Bearer <jwt-token>` only. Do not include `Authorization =` and do not wrap the value in quotes."
     });
 
     options.AddSecurityRequirement(_ => new OpenApiSecurityRequirement
