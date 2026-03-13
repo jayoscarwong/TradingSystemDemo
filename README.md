@@ -5,7 +5,7 @@
 This solution is a hybrid demo that combines two ideas:
 
 1. A Quartz.NET-based distributed scheduler that manages per-server symbol polling jobs.
-2. A trading pipeline that demonstrates cache-aside reads with Redis, durable writes in MySQL, asynchronous work distribution through RabbitMQ, and optimistic concurrency in the worker.
+2. A trading pipeline that demonstrates cache-aside reads with a Redis-compatible cache, durable writes in MySQL, asynchronous work distribution through RabbitMQ, and optimistic concurrency in the worker.
 
 The goal is to show how a system can:
 
@@ -13,7 +13,7 @@ The goal is to show how a system can:
 - Save the write model in MySQL first.
 - Push processing work to RabbitMQ.
 - Let a background worker update the durable market state.
-- Publish the latest read model to Redis for high-speed price reads.
+- Publish the latest read model to a Redis-compatible cache for high-speed price reads.
 - Use Quartz to dynamically create and manage symbol-polling jobs per trading server.
 
 ## What problem this repo was originally trying to solve
@@ -35,7 +35,7 @@ Before this revision, the code had several mismatches between the intended desig
 
 - The API generated its own GUID for orders in some paths, so client idempotency was not truly enforced.
 - `TradeOrders.RowVersion` and `StockPrices.RowVersion` existed, but optimistic concurrency was not consistently configured and used end to end.
-- Redis sometimes looked like the primary price source in the demo, while the durable `StockPrices` table did not carry enough market-depth information to demonstrate the real-time pattern properly.
+- The cache layer sometimes looked like the primary price source in the demo, while the durable `StockPrices` table did not carry enough market-depth information to demonstrate the real-time pattern properly.
 - The API process was also wired as a RabbitMQ consumer, which blurred the intended boundary between API writes and worker-side processing.
 - The scheduler portion was partially implemented, but the REST surface did not fully reflect the CRUD/filtering/update/status expectations from `BaseDesignProblem.txt`.
 - The upgrade SQL used `ADD COLUMN IF NOT EXISTS`, which can fail depending on the MySQL build/version used from Docker Desktop and MySQL Workbench.
@@ -46,7 +46,7 @@ Before this revision, the code had several mismatches between the intended desig
 - Duplicate POST requests with the same GUID return the existing order state instead of inserting duplicates.
 - `TradeOrders` and `StockPrices` both use real optimistic concurrency tokens.
 - The worker now owns queue consumption and retries safely on concurrency collisions.
-- Durable market state is stored in MySQL and cached in Redis using cache-aside read behavior.
+- Durable market state is stored in MySQL and cached in Valkey using cache-aside read behavior.
 - `StockPrices` now stores:
   - `AvailableVolume`
   - `PendingBuyVolume`
@@ -75,7 +75,7 @@ flowchart LR
     Worker["TradingSystem.Worker"]
     Rabbit["RabbitMQ"]
     MySQL["MySQL"]
-    Redis["Redis"]
+    Cache["Valkey\n(Redis-compatible)"]
     Quartz["Quartz.NET Clustered Scheduler"]
 
     Client -->|POST /api/Trades| API
@@ -85,7 +85,7 @@ flowchart LR
     API -->|Insert TradeOrders| MySQL
     API -->|Publish ProcessTradeCommand| Rabbit
     API -->|Cache-aside fallback read| MySQL
-    API -->|High-speed read| Redis
+    API -->|High-speed read| Cache
     API -->|Task CRUD / scheduler queries| Quartz
 
     Quartz -->|Schedule metadata| MySQL
@@ -93,7 +93,7 @@ flowchart LR
 
     Worker -->|Consume messages| Rabbit
     Worker -->|Update TradeOrders + StockPrices| MySQL
-    Worker -->|Write latest price cache| Redis
+    Worker -->|Write latest price cache| Cache
 ```
 
 ### Trade execution sequence
@@ -106,7 +106,7 @@ sequenceDiagram
     participant M as MySQL
     participant Q as RabbitMQ
     participant W as Worker
-    participant R as Redis
+    participant R as Valkey
 
     C->>A: POST /api/Trades { orderId, ticker, volume, side, bid }
     A->>M: Insert TradeOrders (idempotent by OrderId GUID)
@@ -142,7 +142,7 @@ flowchart TD
     Delete["Delete stale jobs for disabled servers\nor removed tickers"]
     Child["SymbolDataPullJob"]
     Fetch["FetchStockPriceCommand"]
-    Cache["Refresh Redis snapshot\nand update server heartbeat"]
+    Cache["Refresh Valkey snapshot\nand update server heartbeat"]
 
     Master --> Servers
     Master --> Prices
@@ -211,7 +211,21 @@ This is enough to visibly demonstrate high-volume real-time behavior while keepi
 | Disable concurrent execution | Implemented | `MasterOrchestratorJob` uses `DisallowConcurrentExecution`. |
 | Per-server isolated processing | Implemented | Jobs include `ServerId` and `Ticker` in job data. |
 | Dynamic child task management | Implemented | Master job creates missing jobs and deletes stale jobs. |
-| Trading scenario extension | Added beyond base brief | Demonstrates MySQL + RabbitMQ + Redis + optimistic concurrency. |
+| Trading scenario extension | Added beyond base brief | Demonstrates MySQL + RabbitMQ + Valkey + optimistic concurrency. |
+
+## Local dependency and licensing policy
+
+For local development, this repository should stay on components that are free to run without a business license.
+
+- RabbitMQ is pinned to `rabbitmq:4.2-management-alpine`.
+- The cache service is pinned to `valkey/valkey:9.0-alpine`.
+- Valkey is used instead of the upstream Redis image so local development stays on a clearly free/open-source cache while keeping Redis protocol compatibility with the .NET client code.
+- RabbitMQ remains on the official open-source server image for local development and does not require a separate business license just to run the container locally.
+
+Practical effect:
+
+- No application code changes are needed to switch from Redis to Valkey for this repo because `StackExchangeRedis` talks the same protocol.
+- The configuration section name remains `Redis` in the .NET apps because it is the client configuration name, not a hard dependency on the upstream Redis Docker image.
 
 ## Remaining gaps compared with a production system
 
@@ -281,15 +295,15 @@ docker compose logs tradingsystem-worker --tail=200
 - RabbitMQ management: [http://localhost:15672](http://localhost:15672)
   - username: `guest`
   - password: `guest`
+- Valkey:
+  - host: `localhost`
+  - port: `6379`
 - MySQL:
   - host: `localhost`
   - port: `3306`
   - user: `root`
   - password: `rootpassword`
   - database: `tradingsystem`
-- Redis:
-  - host: `localhost`
-  - port: `6379`
 
 ## In-place schema upgrade for an existing local MySQL volume
 
@@ -319,7 +333,7 @@ Run worker:
 dotnet run --project .\TradingSystem.Worker\TradingSystem.Worker.csproj
 ```
 
-For non-Docker local runs, update connection strings and host names in `appsettings.json` or environment variables so MySQL, Redis, and RabbitMQ point to your local machine instead of container DNS names.
+For non-Docker local runs, update connection strings and host names in `appsettings.json` or environment variables so MySQL, Valkey, and RabbitMQ point to your local machine instead of container DNS names.
 
 ## Useful demo calls
 
@@ -362,6 +376,7 @@ Invoke-RestMethod -Method Get -Uri "http://localhost:8080/api/tasks?page=1&pageS
 - `upgrade-20260313-market-depth.sql` is for upgrading an older local database in place.
 - `TradingSystem.Api` owns the REST API and publishes commands.
 - `TradingSystem.Worker` owns background processing, Quartz orchestration, and RabbitMQ consumption.
+- `cache-store` runs Valkey as the Redis-compatible cache layer for the demo.
 - `TradingSystem.Infrastructure` contains EF Core database configuration.
 
 ## Verification used for this revision

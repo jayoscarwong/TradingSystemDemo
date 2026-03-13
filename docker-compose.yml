@@ -24,21 +24,21 @@ services:
       retries: 5
       start_period: 30s
 
-  redis-cache:
-    image: redis:7-alpine
-    container_name: tradingsystem-redis
+  cache-store:
+    image: valkey/valkey:9.0-alpine
+    container_name: tradingsystem-cache
     ports:
       - "6379:6379"
     networks:
       - trading-network
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "valkey-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
 
   rabbitmq-broker:
-    image: rabbitmq:3-management-alpine
+    image: rabbitmq:4.2-management-alpine
     container_name: tradingsystem-rabbitmq
     environment:
       RABBITMQ_DEFAULT_USER: guest
@@ -71,7 +71,7 @@ services:
     depends_on:
       mysql-db:
         condition: service_healthy
-      redis-cache:
+      cache-store:
         condition: service_healthy
       rabbitmq-broker:
         condition: service_healthy
@@ -93,7 +93,7 @@ services:
         condition: service_healthy
       rabbitmq-broker:
         condition: service_healthy
-      redis-cache:
+      cache-store:
         condition: service_healthy
 
 volumes:
