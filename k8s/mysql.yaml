@@ -1,0 +1,82 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: tradingsystem-mysql-data
+  namespace: trading-system
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tradingsystem-mysql
+  namespace: trading-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tradingsystem-mysql
+  template:
+    metadata:
+      labels:
+        app: tradingsystem-mysql
+    spec:
+      containers:
+        - name: mysql
+          image: mysql:8.0
+          imagePullPolicy: IfNotPresent
+          args:
+            - --default-authentication-plugin=mysql_native_password
+          ports:
+            - containerPort: 3306
+          env:
+            - name: MYSQL_ROOT_PASSWORD
+              value: rootpassword
+            - name: MYSQL_DATABASE
+              value: tradingsystem
+          volumeMounts:
+            - name: mysql-data
+              mountPath: /var/lib/mysql
+            - name: init-sql
+              mountPath: /docker-entrypoint-initdb.d
+          readinessProbe:
+            exec:
+              command:
+                - mysqladmin
+                - ping
+                - -h
+                - localhost
+            initialDelaySeconds: 20
+            periodSeconds: 10
+          livenessProbe:
+            exec:
+              command:
+                - mysqladmin
+                - ping
+                - -h
+                - localhost
+            initialDelaySeconds: 40
+            periodSeconds: 20
+      volumes:
+        - name: mysql-data
+          persistentVolumeClaim:
+            claimName: tradingsystem-mysql-data
+        - name: init-sql
+          configMap:
+            name: trading-init-sql
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: tradingsystem-mysql
+  namespace: trading-system
+spec:
+  selector:
+    app: tradingsystem-mysql
+  ports:
+    - port: 3306
+      targetPort: 3306

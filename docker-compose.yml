@@ -68,12 +68,39 @@ services:
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
       - "ConnectionStrings__DefaultConnection=Server=tradingsystem-mysql;Database=tradingsystem;User=root;Password=rootpassword;"
+      - "Authentication__Issuer=TradingSystem.Auth"
+      - "Authentication__Audience=TradingSystem.Clients"
+      - "Authentication__SigningKey=ChangeThisToALongerDevelopmentSigningKey1234567890"
+      - "Authentication__SessionMinutes=30"
     depends_on:
       mysql-db:
         condition: service_healthy
       cache-store:
         condition: service_healthy
       rabbitmq-broker:
+        condition: service_healthy
+
+  tradingsystem-auth:
+    build:
+      context: "."
+      dockerfile: "TradingSystem.Auth/Dockerfile"
+    container_name: tradingsystem-auth
+    ports:
+      - "8081:8080"
+    networks:
+      - trading-network
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - "ConnectionStrings__DefaultConnection=Server=tradingsystem-mysql;Database=tradingsystem;User=root;Password=rootpassword;"
+      - "Authentication__Issuer=TradingSystem.Auth"
+      - "Authentication__Audience=TradingSystem.Clients"
+      - "Authentication__SigningKey=ChangeThisToALongerDevelopmentSigningKey1234567890"
+      - "Authentication__SessionMinutes=30"
+      - "Authentication__BootstrapAdminPassword=Admin123!ChangeMe"
+    depends_on:
+      mysql-db:
+        condition: service_healthy
+      cache-store:
         condition: service_healthy
 
 

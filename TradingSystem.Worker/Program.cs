@@ -2,6 +2,7 @@ using MassTransit;
 using Microsoft.EntityFrameworkCore;
 using Quartz;
 using TradingSystem.Infrastructure.Data;
+using TradingSystem.Infrastructure.Services;
 using TradingSystem.Worker.Jobs;
 using TradingSystem.Worker.Services;
 
@@ -18,8 +19,11 @@ builder.ConfigureServices((hostContext, services) =>
     );
     services.AddTransient<TradePersistenceService>();
     services.AddTransient<TradeExecutionService>();
+    services.AddTransient<MasterOrchestratorJob>();
     services.AddTransient<SymbolDataPullJob>();
     services.AddTransient<JobExecutionHistoryListener>();
+    services.AddScoped<ScheduledTaskQuartzService>();
+    services.AddHostedService<ScheduledTaskBootstrapService>();
 
     var redisSettings = configuration.GetSection("Redis");
     services.AddStackExchangeRedisCache(options =>
@@ -77,14 +81,6 @@ builder.ConfigureServices((hostContext, services) =>
                 c.CheckinInterval = TimeSpan.FromSeconds(10);
             });
         });
-
-        var jobKey = new JobKey("MasterOrchestratorJob");
-        q.AddJob<MasterOrchestratorJob>(opts => opts.WithIdentity(jobKey));
-        q.AddTrigger(opts => opts
-            .ForJob(jobKey)
-            .WithIdentity("MasterOrchestratorTrigger")
-            .StartNow()
-            .WithCronSchedule("0 0/5 * * * ?"));
     });
 
     services.AddQuartzHostedService(options =>

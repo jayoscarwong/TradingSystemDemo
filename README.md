@@ -1,350 +1,413 @@
 # TradingSystemDemo
 
-## What this solution demonstrates
+## What this solution is trying to demo
 
-This solution is a hybrid demo that combines two ideas:
+This repository demonstrates a trading-system sample that combines:
 
-1. A Quartz.NET-based distributed scheduler that manages per-server symbol polling jobs.
-2. A trading pipeline that demonstrates cache-aside reads with a Redis-compatible cache, durable writes in MySQL, asynchronous work distribution through RabbitMQ, and optimistic concurrency in the worker.
+1. A Quartz.NET scheduler with persistent MySQL storage and distributed worker execution.
+2. A cache-aside market data pattern where MySQL is the durable source of truth and Valkey is the fast read model.
+3. An asynchronous trading write pipeline where the API writes orders to MySQL first, then publishes work to RabbitMQ.
+4. A dedicated authentication service that issues JWT bearer tokens for the other packages.
+5. Role and permission-based authorization for admin task control, trader order placement, and read-only monitoring.
 
-The goal is to show how a system can:
+The goal is not to build a real exchange. The goal is to demonstrate the platform patterns around:
 
-- Accept trade requests through an API.
-- Save the write model in MySQL first.
-- Push processing work to RabbitMQ.
-- Let a background worker update the durable market state.
-- Publish the latest read model to a Redis-compatible cache for high-speed price reads.
-- Use Quartz to dynamically create and manage symbol-polling jobs per trading server.
+- scheduler CRUD and monitoring
+- clustered background work
+- idempotent writes
+- optimistic concurrency
+- high-speed cache reads
+- RBAC and JWT enforcement
+- local Docker and local Kubernetes deployment shapes
 
-## What problem this repo was originally trying to solve
+## What was wrong before
 
-`BaseDesignProblem.txt` is primarily about a scheduler platform:
+The earlier revision had several mismatches against `BaseDesignProblem.txt` and the intended trading architecture:
 
-- persistent Quartz storage
-- task CRUD APIs
-- execution history and status
-- non-concurrent parent orchestration
-- child jobs per enabled trading server
-- safe dynamic creation/removal of jobs
+- Quartz tasks were identified by job names instead of opaque numeric IDs.
+- Task metadata lived mostly inside Quartz, so the REST API did not own a durable task model.
+- Task status was partly derived from local scheduler state, which does not scale well across multiple worker pods.
+- The demo had no trade account, no JWT auth, and no permission model for task administration.
+- Orders were not owned by an authenticated trade account.
+- The repository had no dedicated authentication package.
+- The previous README diagrams used Mermaid edge labels that GitHub could not parse reliably.
 
-This repository now demonstrates that base scheduler problem and extends it with a trading scenario so the scheduler is not just abstract task orchestration, but is connected to a realistic event-driven data flow.
+## What is implemented now
 
-## Problems found before this update
-
-Before this revision, the code had several mismatches between the intended design and the implementation:
-
-- The API generated its own GUID for orders in some paths, so client idempotency was not truly enforced.
-- `TradeOrders.RowVersion` and `StockPrices.RowVersion` existed, but optimistic concurrency was not consistently configured and used end to end.
-- The cache layer sometimes looked like the primary price source in the demo, while the durable `StockPrices` table did not carry enough market-depth information to demonstrate the real-time pattern properly.
-- The API process was also wired as a RabbitMQ consumer, which blurred the intended boundary between API writes and worker-side processing.
-- The scheduler portion was partially implemented, but the REST surface did not fully reflect the CRUD/filtering/update/status expectations from `BaseDesignProblem.txt`.
-- The upgrade SQL used `ADD COLUMN IF NOT EXISTS`, which can fail depending on the MySQL build/version used from Docker Desktop and MySQL Workbench.
-
-## What was corrected in this revision
-
-- Trade submission now uses the client-provided `OrderId` GUID as the idempotency key.
-- Duplicate POST requests with the same GUID return the existing order state instead of inserting duplicates.
-- `TradeOrders` and `StockPrices` both use real optimistic concurrency tokens.
-- The worker now owns queue consumption and retries safely on concurrency collisions.
-- Durable market state is stored in MySQL and cached in Valkey using cache-aside read behavior.
-- `StockPrices` now stores:
-  - `AvailableVolume`
-  - `PendingBuyVolume`
-  - `PendingSellVolume`
-- The trade execution logic now demonstrates:
-  - normal buy/sell flow
-  - partial execution
-  - queued liquidity pressure
-  - overbuy and oversell pressure reflected into price movement
-- The task API now supports:
+- `ScheduledTasks` is a first-class table with opaque numeric IDs, persisted runtime fields, metrics, and history linkage.
+- `/api/tasks/{id}` is now numeric-ID based.
+- Task control now covers:
   - create
-  - query with filtering and pagination
-  - task detail
+  - read
   - update
   - delete
-  - status/history/metrics
+  - status/history
+  - monitoring overview
+  - individual shutdown
+  - individual start
+  - run-now
+- Worker-side Quartz listeners update task status in MySQL so monitoring remains meaningful when workers scale out.
+- `TradingSystem.Auth` is a separate JWT issuer service.
+- Trade accounts, groups, permissions, and account-group mappings are stored in MySQL.
+- Login sessions are tracked in Valkey with a configurable 30-minute expiry.
+- `POST /api/Trades` now requires a valid authenticated trade account and stores `TradeAccountId` on each order.
+- Admin users manage task schedules; non-admin users can still read job status and real-time prices according to their permissions.
 
-## Architecture summary
-
-### High-level component view
+## High-level architecture
 
 ```mermaid
 flowchart LR
-    Client["Client / Swagger / Postman"]
-    API["TradingSystem.Api"]
+    Client["Trader / Admin Client"]
+    Auth["TradingSystem.Auth"]
+    Api["TradingSystem.Api"]
     Worker["TradingSystem.Worker"]
+    Mysql["MySQL"]
+    Cache["Valkey (Redis-compatible)"]
     Rabbit["RabbitMQ"]
-    MySQL["MySQL"]
-    Cache["Valkey\n(Redis-compatible)"]
-    Quartz["Quartz.NET Clustered Scheduler"]
+    Quartz["Quartz.NET clustered store"]
 
-    Client -->|POST /api/Trades| API
-    Client -->|GET /api/Trades/price/{ticker}| API
-    Client -->|/api/tasks| API
+    Client -->|"POST /api/Auth/login"| Auth
+    Client -->|"POST /api/Trades"| Api
+    Client -->|"GET /api/Trades/price/{ticker}"| Api
+    Client -->|"GET /api/tasks/{id}/status"| Api
 
-    API -->|Insert TradeOrders| MySQL
-    API -->|Publish ProcessTradeCommand| Rabbit
-    API -->|Cache-aside fallback read| MySQL
-    API -->|High-speed read| Cache
-    API -->|Task CRUD / scheduler queries| Quartz
+    Auth -->|"TradeAccounts / RBAC data"| Mysql
+    Auth -->|"Login session cache"| Cache
 
-    Quartz -->|Schedule metadata| MySQL
-    Quartz -->|Triggers jobs in worker| Worker
+    Api -->|"JWT + Redis session validation"| Cache
+    Api -->|"Task metadata CRUD"| Mysql
+    Api -->|"Quartz schedule updates"| Quartz
+    Api -->|"Insert TradeOrders"| Mysql
+    Api -->|"Publish ProcessTradeCommand"| Rabbit
+    Api -->|"Cache-aside fallback read"| Mysql
+    Api -->|"High-speed price read"| Cache
 
-    Worker -->|Consume messages| Rabbit
-    Worker -->|Update TradeOrders + StockPrices| MySQL
-    Worker -->|Write latest price cache| Cache
+    Worker -->|"Quartz execution + cluster coordination"| Quartz
+    Worker -->|"Consume trade and price commands"| Rabbit
+    Worker -->|"Update ScheduledTasks / TradeOrders / StockPrices"| Mysql
+    Worker -->|"Write latest price snapshot"| Cache
 ```
 
-### Trade execution sequence
+## Trading request flow
 
 ```mermaid
 sequenceDiagram
     autonumber
-    participant C as Client
-    participant A as API
-    participant M as MySQL
-    participant Q as RabbitMQ
-    participant W as Worker
-    participant R as Valkey
+    participant User as "Trader"
+    participant Auth as "TradingSystem.Auth"
+    participant Cache as "Valkey"
+    participant Api as "TradingSystem.Api"
+    participant Mysql as "MySQL"
+    participant Rabbit as "RabbitMQ"
+    participant Worker as "TradingSystem.Worker"
 
-    C->>A: POST /api/Trades { orderId, ticker, volume, side, bid }
-    A->>M: Insert TradeOrders (idempotent by OrderId GUID)
-    A->>Q: Publish ProcessTradeCommand
-    A-->>C: 202 Accepted
+    User->>Auth: "POST /api/Auth/login"
+    Auth->>Mysql: "Load TradeAccount + groups + permissions"
+    Auth->>Cache: "Store login session for 30 minutes"
+    Auth-->>User: "JWT bearer token"
 
-    Q->>W: Deliver ProcessTradeCommand
-    W->>M: Load TradeOrder + StockPrice
-    W->>W: Apply trade execution and liquidity logic
-    W->>M: Save TradeOrders + StockPrices\n(using RowVersion optimistic concurrency)
-    W->>R: Cache latest StockPrice
+    User->>Api: "POST /api/Trades"
+    Api->>Cache: "Validate session by username + sid"
+    Api->>Mysql: "Insert TradeOrders (idempotent GUID, owned by TradeAccountId)"
+    Api->>Rabbit: "Publish ProcessTradeCommand"
+    Api-->>User: "202 Accepted"
 
-    C->>A: GET /api/Trades/price/{ticker}
-    A->>R: Read price cache
-    alt cache hit
-        R-->>A: Latest price snapshot
-    else cache miss
-        A->>M: Read StockPrices
-        M-->>A: Durable price snapshot
-        A->>R: Write cache
+    Rabbit->>Worker: "ProcessTradeCommand"
+    Worker->>Mysql: "Load TradeOrders + StockPrices"
+    Worker->>Worker: "Apply execution and overbuy/oversell logic"
+    Worker->>Mysql: "Save with optimistic concurrency"
+    Worker->>Cache: "Refresh cached price"
+
+    User->>Api: "GET /api/Trades/price/{ticker}"
+    Api->>Cache: "Read price cache"
+    alt "cache miss"
+        Api->>Mysql: "Read StockPrices"
+        Api->>Cache: "Write cache snapshot"
     end
-    A-->>C: Real-time price response
+    Api-->>User: "Latest price snapshot"
 ```
 
-### Scheduler orchestration flow
+## Numeric task lifecycle
+
+```mermaid
+sequenceDiagram
+    autonumber
+    participant Admin as "Admin User"
+    participant Auth as "TradingSystem.Auth"
+    participant Api as "TradingSystem.Api"
+    participant Mysql as "MySQL"
+    participant Quartz as "Quartz cluster"
+    participant Worker as "Worker Pod"
+
+    Admin->>Auth: "Login and receive JWT"
+    Admin->>Api: "POST /api/tasks"
+    Api->>Mysql: "Insert ScheduledTasks row"
+    Api->>Quartz: "Create job key task-{id}"
+    Api->>Mysql: "Persist next fire time and current state"
+    Api-->>Admin: "201 Created with numeric task id"
+
+    Quartz->>Worker: "Execute job for task-{id}"
+    Worker->>Mysql: "Set RuntimeStatus = Running"
+    Worker->>Mysql: "Insert JobExecutionHistories row"
+    Worker->>Mysql: "Update LastExecutionStatus, metrics, next fire time"
+
+    Admin->>Api: "POST /api/tasks/{id}/shutdown"
+    Api->>Quartz: "Pause job"
+    Api->>Mysql: "Set IsPaused = true"
+
+    Admin->>Api: "POST /api/tasks/{id}/start"
+    Api->>Quartz: "Resume or upsert job"
+    Api->>Mysql: "Set IsPaused = false"
+```
+
+## Dynamic server-based task management
 
 ```mermaid
 flowchart TD
-    Master["MasterOrchestratorJob\nDisallowConcurrentExecution"]
-    Servers["TradingServers table\n(enabled servers)"]
-    Prices["StockPrices table\n(active tickers)"]
-    Create["Create DataPullJob-{ServerId}-{Ticker}"]
-    Delete["Delete stale jobs for disabled servers\nor removed tickers"]
+    Master["Master Task Orchestrator"]
+    Servers["TradingServers (enabled rows)"]
+    Prices["StockPrices (active tickers)"]
+    Tasks["ScheduledTasks"]
+    Quartz["Quartz jobs named task-{id}"]
     Child["SymbolDataPullJob"]
-    Fetch["FetchStockPriceCommand"]
-    Cache["Refresh Valkey snapshot\nand update server heartbeat"]
+    Rabbit["RabbitMQ"]
+    PriceConsumer["FetchStockPriceConsumer"]
+    Cache["Valkey"]
+    Mysql["MySQL"]
 
     Master --> Servers
     Master --> Prices
-    Servers --> Create
-    Prices --> Create
-    Master --> Delete
-    Create --> Child
-    Child --> Fetch
-    Fetch --> Cache
+    Servers --> Tasks
+    Prices --> Tasks
+    Tasks --> Quartz
+    Quartz --> Child
+    Child --> Rabbit
+    Rabbit --> PriceConsumer
+    PriceConsumer --> Mysql
+    PriceConsumer --> Cache
 ```
 
-## Updated data model
+## Local Kubernetes scaling design
 
-### `TradeOrders`
+```mermaid
+flowchart TB
+    subgraph Cluster["Local Kubernetes Cluster"]
+        ApiPods["TradingSystem.Api Deployment + HPA"]
+        AuthPods["TradingSystem.Auth Deployment"]
+        WorkerPods["TradingSystem.Worker Deployment + KEDA"]
+        Mysql["MySQL Deployment + PVC"]
+        Cache["Valkey Deployment"]
+        Rabbit["RabbitMQ Deployment"]
+    end
 
-- `Id`: client-provided GUID used as the idempotency key
-- `BidAmount`: requested order price
-- `Volume`: requested volume
-- `ExecutedVolume`: volume matched immediately
-- `QueuedVolume`: volume still waiting for liquidity
-- `Status`: `Pending`, `Completed`, `PartiallyQueued`, `QueuedForLiquidity`, or `Rejected`
-- `IsProcessed`: worker completion flag
-- `CreatedAt`, `ProcessedAt`
-- `RowVersion`: optimistic concurrency token
+    Hpa["CPU / memory driven HPA"] --> ApiPods
+    Keda["RabbitMQ queue-length scaler"] --> WorkerPods
 
-### `StockPrices`
+    ApiPods --> Mysql
+    ApiPods --> Cache
+    ApiPods --> Rabbit
+    AuthPods --> Mysql
+    AuthPods --> Cache
+    WorkerPods --> Mysql
+    WorkerPods --> Cache
+    WorkerPods --> Rabbit
+```
 
-- `CurrentPrice`: latest durable price
-- `TotalStockVolume`: configured market capacity for the ticker
-- `AvailableVolume`: volume that can be bought immediately
-- `BuyVolume`: cumulative buy activity
-- `SellVolume`: cumulative sell activity
-- `PendingBuyVolume`: unmet buy demand
-- `PendingSellVolume`: unmatched sell supply
-- `RowVersion`: optimistic concurrency token
+## Why the scaling policy is split this way
+
+- `TradingSystem.Api` is stateless and request-driven, so CPU-based HPA is the simplest signal for local clusters.
+- `TradingSystem.Worker` should scale based on backlog, not CPU alone, so KEDA watches RabbitMQ queue length.
+- Quartz clustering remains in the worker pods, backed by MySQL. That lets multiple worker replicas share scheduled execution safely.
+- `TradingSystem.Auth` can stay at one replica locally because JWT issuance is lightweight and token validation in the API is local plus Redis-backed.
+
+## Authorization and account model
+
+### Trade account fields
+
+- `Name`
+- `Username`
+- `Email`
+- `PasswordHash` (HMAC-SHA512)
+- `PasswordSalt`
+- `CreatedAt`
+- `IsDisabled`
+- `LastLoginAt`
+
+### Seeded user groups
+
+- `Administrators`
+  - can manage accounts
+  - can manage tasks
+  - can read task status
+  - can read prices
+  - can place trades
+- `Traders`
+  - can read task status
+  - can read prices
+  - can place trades
+- `Observers`
+  - can read task status
+  - can read prices
+
+### Default local admin account
+
+- username: `admin`
+- password: `Admin123!ChangeMe`
+
+This is only for local demo bootstrap. Change it for anything beyond local testing.
+
+## Task API surface
+
+### Read and monitoring
+
+- `GET /api/tasks`
+- `GET /api/tasks/monitoring/overview`
+- `GET /api/tasks/{id}`
+- `GET /api/tasks/{id}/status`
+
+### Admin control
+
+- `POST /api/tasks`
+- `PUT /api/tasks/{id}`
+- `DELETE /api/tasks/{id}`
+- `POST /api/tasks/{id}/shutdown`
+- `POST /api/tasks/{id}/start`
+- `POST /api/tasks/{id}/run-now`
+
+## Auth API surface
+
+- `POST /api/Auth/login`
+- `POST /api/Auth/logout`
+- `GET /api/Auth/me`
+- `GET /api/TradeAccounts`
+- `GET /api/TradeAccounts/{id}`
+- `POST /api/TradeAccounts`
+- `PUT /api/TradeAccounts/{id}`
+- `PUT /api/TradeAccounts/{id}/disable`
+- `DELETE /api/TradeAccounts/{id}`
+
+## Trading API behavior
+
+- `POST /api/Trades`
+  - requires `trades.place`
+  - requires a valid JWT
+  - requires a valid Redis-backed login session
+  - uses client GUID idempotency
+  - stores `TradeAccountId`
+- `GET /api/Trades/price/{ticker}`
+  - requires `prices.read`
+  - uses cache-aside reads
 
 ## How the overbuy and oversell demo works
 
-This is still a demo, not a real exchange matching engine.
+This repository still uses a simplified market-pressure model rather than a true order book.
 
-The worker uses aggregated liquidity rules:
+- buy orders first consume queued sell pressure, then available volume
+- sell orders first consume queued buy pressure, then replenish available volume
+- unmet buy volume increases `PendingBuyVolume`
+- unmet sell volume increases `PendingSellVolume`
+- price movement comes from:
+  - executed volume against the bid
+  - queued pressure
+  - buy vs sell imbalance
 
-- Buy orders first consume `PendingSellVolume`, then `AvailableVolume`.
-- Sell orders first consume `PendingBuyVolume`, then restore `AvailableVolume`.
-- Any remaining unmet quantity becomes queued pressure:
-  - unmet buy quantity increases `PendingBuyVolume`
-  - unmet sell quantity increases `PendingSellVolume`
-- Price moves are calculated from:
-  - executed volume against the requested bid
-  - extra queued pressure
-  - current buy/sell imbalance
-
-This is enough to visibly demonstrate high-volume real-time behavior while keeping the sample logic understandable.
+That is enough to demonstrate the high-volume real-time design without hiding the logic behind an exchange engine.
 
 ## Comparison with `BaseDesignProblem.txt`
 
-| Base requirement | Status in this solution | Notes |
+| Base requirement | Status now | Notes |
 |---|---|---|
-| Quartz background scheduling | Implemented | Worker uses Quartz with persistent MySQL store. |
-| Simple + cron scheduling | Implemented | Master orchestrator uses cron; child jobs use simple repeating schedule; task API supports cron job creation/update. |
-| Persistent job storage | Implemented | Quartz tables stored in MySQL. |
-| Graceful shutdown | Implemented | Quartz hosted service waits for jobs to complete. |
-| REST task CRUD | Implemented | `/api/tasks` supports create, list, detail, update, delete, status. |
-| Filtering and pagination | Implemented | Added to `GET /api/tasks`. |
-| Status/history/metrics | Implemented | Execution history stored in `JobExecutionHistories`; status endpoint returns history and average duration. |
-| Disable concurrent execution | Implemented | `MasterOrchestratorJob` uses `DisallowConcurrentExecution`. |
-| Per-server isolated processing | Implemented | Jobs include `ServerId` and `Ticker` in job data. |
-| Dynamic child task management | Implemented | Master job creates missing jobs and deletes stale jobs. |
-| Trading scenario extension | Added beyond base brief | Demonstrates MySQL + RabbitMQ + Valkey + optimistic concurrency. |
-
-## Local dependency and licensing policy
-
-For local development, this repository should stay on components that are free to run without a business license.
-
-- RabbitMQ is pinned to `rabbitmq:4.2-management-alpine`.
-- The cache service is pinned to `valkey/valkey:9.0-alpine`.
-- Valkey is used instead of the upstream Redis image so local development stays on a clearly free/open-source cache while keeping Redis protocol compatibility with the .NET client code.
-- RabbitMQ remains on the official open-source server image for local development and does not require a separate business license just to run the container locally.
-
-Practical effect:
-
-- No application code changes are needed to switch from Redis to Valkey for this repo because `StackExchangeRedis` talks the same protocol.
-- The configuration section name remains `Redis` in the .NET apps because it is the client configuration name, not a hard dependency on the upstream Redis Docker image.
-
-## Remaining gaps compared with a production system
-
-- The pricing engine is illustrative, not a true limit-order-book or exchange matching engine.
-- There is no authentication or authorization on the APIs.
-- There is no automated integration test suite for Dockerized end-to-end flows yet.
-- Quartz task identifiers are based on job names instead of a dedicated task table with opaque numeric IDs.
-- There is no separate migration project yet; schema bootstrap is handled by `init.sql`, and in-place upgrades use standalone SQL scripts.
-
-## Prerequisites
-
-- Docker Desktop
-- Docker Compose
-- .NET SDK 10.0 if you want to build/run outside containers
-- Optional:
-  - MySQL Workbench
-  - Postman or Swagger UI
+| Background scheduler using Quartz.NET | Implemented | Worker hosts Quartz with MySQL persistent store and clustering. |
+| Support simple and cron schedules | Implemented | `ScheduledTasks` supports both `Simple` and `Cron`. |
+| Persistent job storage | Implemented | Quartz tables plus `ScheduledTasks` metadata live in MySQL. |
+| REST task CRUD | Implemented | Numeric task IDs are exposed through `/api/tasks/{id}`. |
+| Task filtering and pagination | Implemented | `GET /api/tasks` supports both. |
+| Status, history, and metrics | Implemented | `JobExecutionHistories` plus status fields on `ScheduledTasks`. |
+| Disable concurrent execution | Implemented | `MasterOrchestratorJob` and `SymbolDataPullJob` use Quartz non-concurrent execution semantics per job key. |
+| Per-server isolated processing | Implemented | Symbol polling tasks carry `ServerId` and `Ticker`. |
+| Dynamic child task management | Implemented | Master task reconciles enabled servers and active tickers into child tasks. |
+| Idempotent repeated parent runs | Implemented | Master task reuses existing child rows and reactivates stale ones instead of duplicating. |
+| Graceful shutdown | Implemented | Quartz hosted service waits for jobs to finish. |
 
 ## Fresh local setup with Docker Desktop
 
-### 1. Clean existing local state
-
-Use this when you want Docker to recreate MySQL from the updated `init.sql`.
+### 1. Wipe old local state
 
 ```powershell
 docker compose down -v --remove-orphans
-```
-
-If you want to confirm the named volume is gone or remove it manually:
-
-```powershell
-docker volume ls | Select-String mysql_data
 docker volume rm oscarwmh_mysql_data
 ```
 
-If your Compose project name differs, the volume name will differ too. `docker compose down -v` is the safest default.
+If the named volume does not exist, Docker will print an error for the second command. That is harmless.
 
-### 2. Rebuild all images
+### 2. Rebuild and start everything
 
 ```powershell
 docker compose build --no-cache
-```
-
-### 3. Start the full stack
-
-```powershell
-docker compose up -d
-```
-
-Or one command for rebuild + recreate:
-
-```powershell
 docker compose up -d --build --force-recreate
-```
-
-### 4. Check container health
-
-```powershell
 docker compose ps
-docker compose logs tradingsystem-api --tail=200
-docker compose logs tradingsystem-worker --tail=200
 ```
 
-### 5. Open the demo endpoints
+### 3. Endpoints
 
-- Swagger UI: [http://localhost:8080/swagger](http://localhost:8080/swagger)
+- trading API Swagger: [http://localhost:8080/swagger](http://localhost:8080/swagger)
+- auth Swagger: [http://localhost:8081/swagger](http://localhost:8081/swagger)
 - RabbitMQ management: [http://localhost:15672](http://localhost:15672)
-  - username: `guest`
-  - password: `guest`
-- Valkey:
-  - host: `localhost`
-  - port: `6379`
-- MySQL:
-  - host: `localhost`
-  - port: `3306`
-  - user: `root`
-  - password: `rootpassword`
-  - database: `tradingsystem`
+- MySQL: `localhost:3306`
+- Valkey: `localhost:6379`
 
-## In-place schema upgrade for an existing local MySQL volume
-
-If you do not want to wipe Docker volumes, use:
+### 4. First login
 
 ```powershell
-cmd /c "docker exec -i tradingsystem-mysql mysql -uroot -prootpassword tradingsystem < upgrade-20260313-market-depth.sql"
+$login = Invoke-RestMethod `
+  -Method Post `
+  -Uri "http://localhost:8081/api/Auth/login" `
+  -ContentType "application/json" `
+  -Body (@{
+      username = "admin"
+      password = "Admin123!ChangeMe"
+  } | ConvertTo-Json)
+
+$token = $login.accessToken
+$headers = @{ Authorization = "Bearer $token" }
 ```
 
-You can also open `upgrade-20260313-market-depth.sql` in MySQL Workbench and run it there. This script avoids `ADD COLUMN IF NOT EXISTS` and instead checks `INFORMATION_SCHEMA` before executing each `ALTER TABLE`.
-
-## Building locally without Docker
+### 5. Create a trader account
 
 ```powershell
-dotnet build TradingSystem.slnx
+Invoke-RestMethod `
+  -Method Post `
+  -Uri "http://localhost:8081/api/TradeAccounts" `
+  -Headers $headers `
+  -ContentType "application/json" `
+  -Body (@{
+      name = "Demo Trader"
+      username = "trader1"
+      email = "trader1@tradingsystem.local"
+      password = "Trader123!"
+      groupNames = @("Traders")
+  } | ConvertTo-Json)
 ```
 
-Run API:
+### 6. Place an authenticated idempotent order
 
 ```powershell
-dotnet run --project .\TradingSystem.Api\TradingSystem.Api.csproj
-```
+$traderLogin = Invoke-RestMethod `
+  -Method Post `
+  -Uri "http://localhost:8081/api/Auth/login" `
+  -ContentType "application/json" `
+  -Body (@{
+      username = "trader1"
+      password = "Trader123!"
+  } | ConvertTo-Json)
 
-Run worker:
-
-```powershell
-dotnet run --project .\TradingSystem.Worker\TradingSystem.Worker.csproj
-```
-
-For non-Docker local runs, update connection strings and host names in `appsettings.json` or environment variables so MySQL, Valkey, and RabbitMQ point to your local machine instead of container DNS names.
-
-## Useful demo calls
-
-### Place an idempotent trade
-
-```powershell
+$traderHeaders = @{ Authorization = "Bearer $($traderLogin.accessToken)" }
 $orderId = [guid]::NewGuid()
 
 Invoke-RestMethod `
   -Method Post `
   -Uri "http://localhost:8080/api/Trades" `
+  -Headers $traderHeaders `
   -ContentType "application/json" `
   -Body (@{
       orderId = $orderId
@@ -356,36 +419,155 @@ Invoke-RestMethod `
   } | ConvertTo-Json)
 ```
 
-Resend the same payload with the same `orderId` to verify duplicate protection.
+Resend the same payload with the same `orderId` to verify idempotency.
 
-### Read the real-time cached price
-
-```powershell
-Invoke-RestMethod -Method Get -Uri "http://localhost:8080/api/Trades/price/AMZN"
-```
-
-### Query scheduled tasks
+### 7. Inspect tasks
 
 ```powershell
-Invoke-RestMethod -Method Get -Uri "http://localhost:8080/api/tasks?page=1&pageSize=20"
+Invoke-RestMethod -Method Get -Uri "http://localhost:8080/api/tasks" -Headers $headers
+Invoke-RestMethod -Method Get -Uri "http://localhost:8080/api/tasks/monitoring/overview" -Headers $headers
 ```
 
-## Repository notes
+## Upgrading an existing local MySQL volume
 
-- `init.sql` is the full bootstrap for a fresh database.
-- `upgrade-20260313-market-depth.sql` is for upgrading an older local database in place.
-- `TradingSystem.Api` owns the REST API and publishes commands.
-- `TradingSystem.Worker` owns background processing, Quartz orchestration, and RabbitMQ consumption.
-- `cache-store` runs Valkey as the Redis-compatible cache layer for the demo.
-- `TradingSystem.Infrastructure` contains EF Core database configuration.
+If you want to keep the old Docker volume instead of wiping it, run:
+
+```powershell
+cmd /c "docker exec -i tradingsystem-mysql mysql -uroot -prootpassword tradingsystem < upgrade-20260313-market-depth.sql"
+```
+
+This script avoids the MySQL Workbench `ADD COLUMN IF NOT EXISTS` issue by checking `INFORMATION_SCHEMA` before each `ALTER TABLE`.
+
+## Local Kubernetes deployment
+
+### Shared idea
+
+The Kubernetes manifests are under [k8s](/C:/z/Hytech/oscarwmh/k8s). They assume:
+
+- MySQL, RabbitMQ, and Valkey run inside the same local cluster namespace
+- the app images are built locally as:
+  - `tradingsystem-api:local`
+  - `tradingsystem-auth:local`
+  - `tradingsystem-worker:local`
+- API scaling uses HPA
+- worker scaling uses KEDA
+
+### Minikube setup
+
+1. Start Minikube and enable metrics:
+
+```powershell
+minikube start --cpus=4 --memory=8192
+minikube addons enable metrics-server
+```
+
+2. Install KEDA:
+
+```powershell
+helm repo add kedacore https://kedacore.github.io/charts
+helm repo update
+helm install keda kedacore/keda --namespace keda --create-namespace
+```
+
+3. Build images directly into Minikube:
+
+```powershell
+minikube image build -t tradingsystem-api:local -f TradingSystem.Api/Dockerfile .
+minikube image build -t tradingsystem-auth:local -f TradingSystem.Auth/Dockerfile .
+minikube image build -t tradingsystem-worker:local -f TradingSystem.Worker/Dockerfile .
+```
+
+4. Apply manifests:
+
+```powershell
+kubectl apply -f k8s/namespace.yaml
+kubectl create configmap trading-init-sql --from-file=init.sql -n trading-system --dry-run=client -o yaml | kubectl apply -f -
+kubectl apply -f k8s/secrets.yaml
+kubectl apply -f k8s/configmap.yaml
+kubectl apply -f k8s/mysql.yaml
+kubectl apply -f k8s/valkey.yaml
+kubectl apply -f k8s/rabbitmq.yaml
+kubectl apply -f k8s/tradingsystem-auth.yaml
+kubectl apply -f k8s/tradingsystem-api.yaml
+kubectl apply -f k8s/tradingsystem-worker.yaml
+kubectl apply -f k8s/tradingsystem-api-hpa.yaml
+kubectl apply -f k8s/tradingsystem-worker-trigger-authentication.yaml
+kubectl apply -f k8s/tradingsystem-worker-scaledobject.yaml
+```
+
+5. Access NodePort services:
+
+```powershell
+minikube service tradingsystem-api -n trading-system --url
+minikube service tradingsystem-auth -n trading-system --url
+```
+
+### Kind setup
+
+1. Create the cluster:
+
+```powershell
+kind create cluster --name trading-system --config k8s/kind-cluster.yaml
+```
+
+2. Install metrics-server and KEDA:
+
+```powershell
+kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+helm repo add kedacore https://kedacore.github.io/charts
+helm repo update
+helm install keda kedacore/keda --namespace keda --create-namespace
+```
+
+3. Build and load local images:
+
+```powershell
+docker build -t tradingsystem-api:local -f TradingSystem.Api/Dockerfile .
+docker build -t tradingsystem-auth:local -f TradingSystem.Auth/Dockerfile .
+docker build -t tradingsystem-worker:local -f TradingSystem.Worker/Dockerfile .
+
+kind load docker-image tradingsystem-api:local --name trading-system
+kind load docker-image tradingsystem-auth:local --name trading-system
+kind load docker-image tradingsystem-worker:local --name trading-system
+```
+
+4. Apply the same manifests listed in the Minikube section.
+
+5. Access services through the `kind` port mappings:
+
+- API: [http://localhost:8080/swagger](http://localhost:8080/swagger)
+- Auth: [http://localhost:8081/swagger](http://localhost:8081/swagger)
+
+## Dependency and licensing policy
+
+For local development, the stack should stay on components that are free to run locally:
+
+- RabbitMQ: `rabbitmq:4.2-management-alpine`
+- Valkey: `valkey/valkey:9.0-alpine`
+
+Valkey is used as the Redis-compatible cache so the sample keeps the Redis protocol without pulling local development toward newer licensing ambiguity in upstream Redis packaging.
+
+## Files to know
+
+- [BaseDesignProblem.txt](/C:/z/Hytech/oscarwmh/BaseDesignProblem.txt)
+- [init.sql](/C:/z/Hytech/oscarwmh/init.sql)
+- [upgrade-20260313-market-depth.sql](/C:/z/Hytech/oscarwmh/upgrade-20260313-market-depth.sql)
+- [docker-compose.yml](/C:/z/Hytech/oscarwmh/docker-compose.yml)
+- [TradingSystem.Api](/C:/z/Hytech/oscarwmh/TradingSystem.Api)
+- [TradingSystem.Auth](/C:/z/Hytech/oscarwmh/TradingSystem.Auth)
+- [TradingSystem.Worker](/C:/z/Hytech/oscarwmh/TradingSystem.Worker)
+- [k8s](/C:/z/Hytech/oscarwmh/k8s)
+
+## Remaining demo gaps
+
+- The pricing engine is illustrative, not a real limit-order book.
+- There is no refresh-token flow yet; login is access-token only.
+- Secrets in `docker-compose.yml` and `k8s/secrets.yaml` are demo defaults, not production secret management.
+- The local Kubernetes manifests are intentionally direct YAML for clarity; a production deployment would usually move this to Helm or Kustomize overlays.
 
 ## Verification used for this revision
 
 ```powershell
 dotnet build TradingSystem.slnx
+docker compose config
 ```
-
-Build result during this update:
-
-- 0 errors
-- 0 warnings

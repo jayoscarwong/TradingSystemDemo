@@ -1,0 +1,57 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: tradingsystem-worker
+  namespace: trading-system
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: tradingsystem-worker
+  template:
+    metadata:
+      labels:
+        app: tradingsystem-worker
+    spec:
+      containers:
+        - name: worker
+          image: tradingsystem-worker:local
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: ConnectionStrings__DefaultConnection
+              valueFrom:
+                secretKeyRef:
+                  name: trading-system-secrets
+                  key: db-connection
+            - name: Redis__Configuration
+              valueFrom:
+                configMapKeyRef:
+                  name: trading-system-config
+                  key: redis-configuration
+            - name: Redis__InstanceName
+              valueFrom:
+                configMapKeyRef:
+                  name: trading-system-config
+                  key: redis-instance-name
+            - name: RabbitMQ__Host
+              valueFrom:
+                configMapKeyRef:
+                  name: trading-system-config
+                  key: rabbitmq-host
+            - name: RabbitMQ__Username
+              valueFrom:
+                configMapKeyRef:
+                  name: trading-system-config
+                  key: rabbitmq-username
+            - name: RabbitMQ__Password
+              valueFrom:
+                secretKeyRef:
+                  name: trading-system-secrets
+                  key: rabbitmq-password
+          resources:
+            requests:
+              cpu: 200m
+              memory: 256Mi
+            limits:
+              cpu: 1000m
+              memory: 512Mi

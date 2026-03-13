@@ -1,21 +1,24 @@
 using System.ComponentModel.DataAnnotations;
 
-public class PlaceBidRequest
+namespace TradingSystem.Api.DTOs
 {
-    public Guid OrderId { get; set; }
+    public class PlaceBidRequest
+    {
+        public Guid OrderId { get; set; }
 
-    [Required]
-    [MaxLength(10)]
-    public required string StockTicker { get; set; }
+        [Required]
+        [MaxLength(10)]
+        public required string StockTicker { get; set; }
 
-    [Range(typeof(decimal), "0.0001", "79228162514264337593543950335")]
-    public decimal BidAmount { get; set; }
+        [Range(typeof(decimal), "0.0001", "79228162514264337593543950335")]
+        public decimal BidAmount { get; set; }
 
-    [Range(typeof(decimal), "0.0001", "79228162514264337593543950335")]
-    public decimal Volume { get; set; }
+        [Range(typeof(decimal), "0.0001", "79228162514264337593543950335")]
+        public decimal Volume { get; set; }
 
-    public bool IsBuy { get; set; }
+        public bool IsBuy { get; set; }
 
-    [Range(1, int.MaxValue)]
-    public int ServerId { get; set; }
+        [Range(1, int.MaxValue)]
+        public int ServerId { get; set; }
+    }
 }

@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: trading-system-config
+  namespace: trading-system
+data:
+  redis-configuration: tradingsystem-cache:6379
+  redis-instance-name: TradingSystem_
+  rabbitmq-host: tradingsystem-rabbitmq
+  rabbitmq-username: guest
+  auth-issuer: TradingSystem.Auth
+  auth-audience: TradingSystem.Clients
+  auth-session-minutes: "30"

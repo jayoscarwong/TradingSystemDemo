@@ -1,0 +1,10 @@
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: tradingsystem-rabbitmq-auth
+  namespace: trading-system
+spec:
+  secretTargetRef:
+    - parameter: host
+      name: trading-system-secrets
+      key: rabbitmq-host-uri
