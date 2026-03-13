@@ -12,7 +12,8 @@
       <PackageReference Include="Microsoft.Extensions.Hosting" Version="10.0.3" />
       <PackageReference Include="Pomelo.EntityFrameworkCore.MySql" Version="8.0.2" />
       <PackageReference Include="Quartz.Extensions.Hosting" Version="3.16.1" />
-      <PackageReference Include="Quartz.Serialization.SystemTextJson" Version="3.16.1" />    
+      <PackageReference Include="Quartz.Serialization.SystemTextJson" Version="3.16.1" />
+      <PackageReference Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="10.0.3" />
   </ItemGroup>  
 
   <ItemGroup>

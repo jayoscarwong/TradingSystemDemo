@@ -2,7 +2,7 @@ namespace TradingSystem.Application.Commands
 {
     public record FetchStockPriceCommand
     {
-        public string Ticker { get; init; }
-        public string ServerId { get; init; }
+        public required string Ticker { get; init; }
+        public required string ServerId { get; init; }
     }
 }

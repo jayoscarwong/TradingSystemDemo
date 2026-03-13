@@ -1,8 +1,9 @@
-﻿using System.Linq;
-using System.Threading.Tasks;
-using Microsoft.AspNetCore.Mvc;
+﻿using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Quartz;
+using System.Linq;
+using System.Threading.Tasks;
+using TradingSystem.Api.DTOs;
 using TradingSystem.Infrastructure.Data;
 
 namespace TradingSystem.Api.Controllers
@@ -118,6 +119,72 @@ namespace TradingSystem.Api.Controllers
                 Message = $"Successfully updated schedule for {jobName}.",
                 NewSchedule = request.CronExpression
             });
+        }
+
+        // --- 1. POST /api/tasks (Create a new task) ---
+        [HttpPost]
+        public async Task<IActionResult> CreateTask([FromBody] CreateTaskRequest request)
+        {
+            var scheduler = await _schedulerFactory.GetScheduler();
+            var jobKey = new JobKey(request.JobName, "DataPullGroup");
+
+            if (await scheduler.CheckExists(jobKey))
+            {
+                return Conflict($"Task '{request.JobName}' already exists.");
+            }
+
+            // Tell Quartz to use the SymbolDataPullJob we created in the Worker
+            var job = JobBuilder.Create(Type.GetType("TradingSystem.Worker.Jobs.SymbolDataPullJob, TradingSystem.Worker"))
+                .WithIdentity(jobKey)
+                .UsingJobData("ServerId", request.ServerId)
+                .Build();
+
+            var trigger = TriggerBuilder.Create()
+                .WithIdentity($"Trigger-{request.JobName}", "DataPullGroup")
+                .WithCronSchedule(request.CronExpression)
+                .Build();
+
+            await scheduler.ScheduleJob(job, trigger);
+
+            return Created($"/api/tasks/{request.JobName}", new { Message = "Task successfully scheduled." });
+        }
+
+        // --- 2. GET /api/tasks/{id} (Get specific task details) ---
+        [HttpGet("{jobName}")]
+        public async Task<IActionResult> GetTaskDetails(string jobName)
+        {
+            var scheduler = await _schedulerFactory.GetScheduler();
+            var jobKey = new JobKey(jobName, "DataPullGroup"); // Assuming default group for this demo
+
+            if (!await scheduler.CheckExists(jobKey))
+            {
+                return NotFound($"Task '{jobName}' not found.");
+            }
+
+            var triggers = await scheduler.GetTriggersOfJob(jobKey);
+
+            return Ok(new
+            {
+                JobName = jobName,
+                NextFireTime = triggers.FirstOrDefault()?.GetNextFireTimeUtc(),
+                PreviousFireTime = triggers.FirstOrDefault()?.GetPreviousFireTimeUtc()
+            });
+        }
+
+        // --- 3. DELETE /api/tasks/{id} (Remove a task) ---
+        [HttpDelete("{jobName}")]
+        public async Task<IActionResult> DeleteTask(string jobName)
+        {
+            var scheduler = await _schedulerFactory.GetScheduler();
+            var jobKey = new JobKey(jobName, "DataPullGroup");
+
+            if (!await scheduler.CheckExists(jobKey))
+            {
+                return NotFound($"Task '{jobName}' not found.");
+            }
+
+            await scheduler.DeleteJob(jobKey);
+            return Ok(new { Message = $"Task '{jobName}' successfully deleted." });
         }
     }
 }
