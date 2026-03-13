@@ -14,7 +14,12 @@ CREATE TABLE TradeOrders (
     Volume DECIMAL(18, 4) NOT NULL,
     IsBuy BOOLEAN NOT NULL,
     ServerId INT NOT NULL,
+    ExecutedVolume DECIMAL(18, 4) NOT NULL DEFAULT 0,
+    QueuedVolume DECIMAL(18, 4) NOT NULL DEFAULT 0,
     IsProcessed BOOLEAN NOT NULL DEFAULT FALSE,
+    Status VARCHAR(50) NOT NULL DEFAULT 'Pending',
+    CreatedAt TIMESTAMP(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6),
+    ProcessedAt TIMESTAMP(6) NULL,
     RowVersion TIMESTAMP(6) DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)
 ) ENGINE=InnoDB;
 
@@ -22,8 +27,11 @@ CREATE TABLE StockPrices (
     Ticker VARCHAR(10) NOT NULL PRIMARY KEY,
     CurrentPrice DECIMAL(18, 4) NOT NULL,
     TotalStockVolume DECIMAL(18, 4) NOT NULL,
+    AvailableVolume DECIMAL(18, 4) NOT NULL DEFAULT 0,
     BuyVolume DECIMAL(18, 4) NOT NULL DEFAULT 0,
     SellVolume DECIMAL(18, 4) NOT NULL DEFAULT 0,
+    PendingBuyVolume DECIMAL(18, 4) NOT NULL DEFAULT 0,
+    PendingSellVolume DECIMAL(18, 4) NOT NULL DEFAULT 0,
     LastUpdatedAt TIMESTAMP(6) DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6),
     RowVersion TIMESTAMP(6) DEFAULT CURRENT_TIMESTAMP(6) ON UPDATE CURRENT_TIMESTAMP(6)
 ) ENGINE=InnoDB;
@@ -40,7 +48,7 @@ CREATE TABLE JobExecutionHistories (
 
 INSERT INTO TradingServers (Id, ServerName, IsEnabled) VALUES (1, 'US-East Node', 1);
 INSERT INTO TradingServers (Id, ServerName, IsEnabled) VALUES (2, 'EU-West Node', 1);
-INSERT INTO StockPrices (Ticker, CurrentPrice, TotalStockVolume) VALUES ('AMZN', 150.00, 2000.00);
+INSERT INTO StockPrices (Ticker, CurrentPrice, TotalStockVolume, AvailableVolume) VALUES ('AMZN', 150.00, 2000.00, 2000.00);
 
 -- ====================================================================
 -- QUARTZ.NET CLUSTERING TABLES (MySQL InnoDB)

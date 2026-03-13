@@ -1,168 +1,113 @@
-﻿using System;
-using System.Threading.Tasks;
 using MassTransit;
 using Microsoft.EntityFrameworkCore;
-using Microsoft.Extensions.Logging;
-using TradingSystem.Application.Commands;
-using TradingSystem.Infrastructure.Data;
-using System;
-using System.Text.Json;
-using System.Threading.Tasks;
 using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Logging;
-using TradingSystem.Domain.Entities;
+using System.Text.Json;
+using TradingSystem.Application.Commands;
+using TradingSystem.Infrastructure.Data;
+using TradingSystem.Worker.Services;
 
 namespace TradingSystem.Worker.Consumers
 {
     public class ProcessTradeConsumer : IConsumer<ProcessTradeCommand>
     {
+        private static readonly DistributedCacheEntryOptions PriceCacheOptions = new()
+        {
+            AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(5)
+        };
+
         private readonly ILogger<ProcessTradeConsumer> _logger;
         private readonly TradingDbContext _dbContext;
         private readonly IDistributedCache _redisCache;
+        private readonly TradeExecutionService _tradeExecutionService;
 
-        public ProcessTradeConsumer(ILogger<ProcessTradeConsumer> logger, TradingDbContext dbContext, IDistributedCache redisCache)
+        public ProcessTradeConsumer(
+            ILogger<ProcessTradeConsumer> logger,
+            TradingDbContext dbContext,
+            IDistributedCache redisCache,
+            TradeExecutionService tradeExecutionService)
         {
             _logger = logger;
             _dbContext = dbContext;
             _redisCache = redisCache;
+            _tradeExecutionService = tradeExecutionService;
         }
+
         public async Task Consume(ConsumeContext<ProcessTradeCommand> context)
         {
             var command = context.Message;
-            bool saved = false;
 
-            while (!saved)
+            while (true)
             {
                 try
                 {
-                    var order = await _dbContext.TradeOrders.FindAsync(command.OrderId);
-                    if (order == null || order.IsProcessed) return; // Idempotency check on the consumer side
+                    _dbContext.ChangeTracker.Clear();
 
-                    var stock = await _dbContext.StockPrices.FindAsync(order.StockTicker);
-                    if (stock == null) return;
+                    var order = await _dbContext.TradeOrders
+                        .SingleOrDefaultAsync(tradeOrder => tradeOrder.Id == command.OrderId, context.CancellationToken);
 
-                    // --- REAL-TIME PRICING LOGIC ---
-                    decimal volatilityFactor = 0.05m; // 5% base volatility
-
-                    if (order.IsBuy)
+                    if (order == null)
                     {
-                        stock.BuyVolume += order.Volume;
-                        stock.AvailableVolume -= order.Volume;
-
-                        // OverBuy Scenario: Buying more than what is available
-                        if (stock.AvailableVolume < 0)
-                        {
-                            // Price spikes aggressively because supply is depleted
-                            decimal overBoughtRatio = Math.Abs(stock.AvailableVolume) / stock.TotalStockVolume;
-                            stock.CurrentPrice *= (1 + (volatilityFactor * 2) + overBoughtRatio);
-
-                            _logger.LogWarning($"[OVERBUY ALERT] {stock.Ticker} liquidity depleted! Price spiked to {stock.CurrentPrice:F2}");
-                        }
-                        else
-                        {
-                            // Normal Buy: Price goes up slightly based on volume weight
-                            decimal impact = (order.Volume / stock.TotalStockVolume) * volatilityFactor;
-                            stock.CurrentPrice *= (1 + impact);
-                        }
-                    }
-                    else // Is Sell
-                    {
-                        stock.SellVolume += order.Volume;
-                        stock.AvailableVolume += order.Volume;
-
-                        // OverSell Scenario: Dumping massive amounts of stock
-                        if (order.Volume > (stock.TotalStockVolume * 0.1m)) // Selling more than 10% of total volume at once
-                        {
-                            decimal dumpRatio = order.Volume / stock.TotalStockVolume;
-                            stock.CurrentPrice *= (1 - (volatilityFactor * 2) - dumpRatio);
-                            _logger.LogWarning($"[OVERSELL ALERT] {stock.Ticker} massive dump! Price crashed to {stock.CurrentPrice:F2}");
-                        }
-                        else
-                        {
-                            // Normal Sell: Price goes down slightly
-                            decimal impact = (order.Volume / stock.TotalStockVolume) * volatilityFactor;
-                            stock.CurrentPrice *= (1 - impact);
-                        }
+                        _logger.LogWarning("Trade order {OrderId} was not found.", command.OrderId);
+                        return;
                     }
 
-                    // Prevent price from hitting zero or negative
-                    if (stock.CurrentPrice < 0.01m) stock.CurrentPrice = 0.01m;
+                    if (order.IsProcessed)
+                    {
+                        _logger.LogInformation("Trade order {OrderId} was already processed. Skipping duplicate worker execution.", command.OrderId);
+                        return;
+                    }
 
-                    stock.LastUpdatedAt = DateTime.UtcNow;
-                    order.IsProcessed = true;
+                    var stock = await _dbContext.StockPrices
+                        .SingleOrDefaultAsync(stockPrice => stockPrice.Ticker == order.StockTicker, context.CancellationToken);
 
-                    // Optimistic Concurrency Save (RowVersion handles collisions here)
-                    await _dbContext.SaveChangesAsync();
-                    saved = true;
+                    if (stock == null)
+                    {
+                        order.Status = "Rejected";
+                        order.ExecutedVolume = 0m;
+                        order.QueuedVolume = order.Volume;
+                        order.ProcessedAt = DateTime.UtcNow;
+                        order.IsProcessed = true;
+                        await _dbContext.SaveChangesAsync(context.CancellationToken);
 
-                    // 4. Update Cache-Aside for High-Speed API Reads
-                    var cacheKey = $"price_{stock.Ticker}";
-                    await _redisCache.SetStringAsync(cacheKey, JsonSerializer.Serialize(stock));
+                        _logger.LogWarning("Trade order {OrderId} references unknown ticker {Ticker}. Order marked as rejected.", order.Id, order.StockTicker);
+                        return;
+                    }
 
-                    _logger.LogInformation($"[Market] {stock.Ticker} processed. New Price: ${stock.CurrentPrice:F4}. Available: {stock.AvailableVolume}");
+                    var summary = _tradeExecutionService.Apply(order, stock, DateTime.UtcNow);
+
+                    await _dbContext.SaveChangesAsync(context.CancellationToken);
+
+                    await _redisCache.SetStringAsync(
+                        GetPriceCacheKey(stock.Ticker),
+                        JsonSerializer.Serialize(stock),
+                        PriceCacheOptions,
+                        context.CancellationToken);
+
+                    _logger.LogInformation(
+                        "[Market] {Ticker} moved from {PreviousPrice:F4} to {NewPrice:F4}. Executed {ExecutedVolume:F4}, queued {QueuedVolume:F4}, available {AvailableVolume:F4}, pending buy {PendingBuyVolume:F4}, pending sell {PendingSellVolume:F4}.",
+                        stock.Ticker,
+                        summary.PreviousPrice,
+                        summary.NewPrice,
+                        summary.ExecutedVolume,
+                        summary.QueuedVolume,
+                        summary.AvailableVolume,
+                        summary.PendingBuyVolume,
+                        summary.PendingSellVolume);
+
+                    return;
                 }
-                catch (DbUpdateConcurrencyException ex)
+                catch (DbUpdateConcurrencyException)
                 {
-                    // Collision occurred! Another order updated the price first. 
-                    // Reload the freshest data from MySQL and run the math again.
-                    foreach (var entry in ex.Entries) await entry.ReloadAsync();
+                    _logger.LogWarning(
+                        "Optimistic concurrency collision while processing order {OrderId}. Reloading the latest row versions and retrying.",
+                        command.OrderId);
+
+                    await Task.Delay(25, context.CancellationToken);
                 }
             }
         }
 
-        //public async Task Consume(ConsumeContext<ProcessTradeCommand> context)
-        //{
-        //    var command = context.Message;
-        //    bool saved = false;
-
-        //    while (!saved)
-        //    {
-        //        try
-        //        {
-        //            // 1. Fetch Order (IDEMPOTENCY CHECK)
-        //            var order = await _dbContext.TradeOrders.FindAsync(command.OrderId);
-        //            if (order == null || order.IsProcessed)
-        //            {
-        //                _logger.LogInformation($"Order {command.OrderId} already processed or invalid. Skipping.");
-        //                return;
-        //            }
-
-        //            // 2. Fetch Global Stock Price
-        //            var stock = await _dbContext.StockPrices.FindAsync(order.StockTicker);
-        //            if (stock == null) return;
-
-        //            // 3. Math: Weighted Average Formula
-        //            // Price moves towards the order price by a fraction of the volume.
-        //            // $NewPrice = CurrentPrice + (OrderVolume / TotalVolume) * (OrderPrice - CurrentPrice)$
-        //            decimal fraction = order.Volume / stock.TotalStockVolume;
-        //            decimal priceDifference = order.BidAmount - stock.CurrentPrice;
-
-        //            stock.CurrentPrice += (fraction * priceDifference);
-
-        //            // 4. Update Aggregates
-        //            if (order.IsBuy) stock.BuyVolume += order.Volume;
-        //            else stock.SellVolume += order.Volume;
-
-        //            // 5. Mark as Processed
-        //            order.IsProcessed = true;
-
-        //            // 6. Attempt Save (Optimistic Concurrency trigger)
-        //            await _dbContext.SaveChangesAsync();
-        //            saved = true;
-
-        //            _logger.LogInformation($"[Market Update] {stock.Ticker} is now ${stock.CurrentPrice:F4}. Triggered by Server: {order.ServerId}");
-        //        }
-        //        catch (DbUpdateConcurrencyException ex)
-        //        {
-        //            // CONCURRENCY HANDLING: Another server updated the price at the exact same millisecond.
-        //            // We discard our math, reload the *newest* price from the database, and let the while loop try again.
-        //            foreach (var entry in ex.Entries)
-        //            {
-        //                await entry.ReloadAsync();
-        //            }
-        //            _logger.LogWarning($"[Concurrency Collision] Recalculating price for order {command.OrderId}...");
-        //        }
-        //    }
-        //}
+        private static string GetPriceCacheKey(string ticker) => $"price_{ticker}";
     }
 }

@@ -10,54 +10,57 @@ var builder = Host.CreateDefaultBuilder(args);
 builder.ConfigureServices((hostContext, services) =>
 {
     var configuration = hostContext.Configuration;
-    var connectionString = configuration.GetConnectionString("DefaultConnection");
+    var connectionString = configuration.GetConnectionString("DefaultConnection")
+        ?? throw new InvalidOperationException("Connection string 'DefaultConnection' is missing.");
 
     services.AddDbContext<TradingDbContext>(options =>
         options.UseMySql(connectionString, ServerVersion.AutoDetect(connectionString))
     );
     services.AddTransient<TradePersistenceService>();
+    services.AddTransient<TradeExecutionService>();
     services.AddTransient<SymbolDataPullJob>();
-    // Register the Quartz Listener
-    //services.AddSingleton<JobExecutionHistoryListener>();
-    services.AddTransient<TradingSystem.Worker.Jobs.JobExecutionHistoryListener>();
+    services.AddTransient<JobExecutionHistoryListener>();
 
-    var RedisSettings = configuration.GetSection("Redis");
+    var redisSettings = configuration.GetSection("Redis");
     services.AddStackExchangeRedisCache(options =>
     {
-        options.Configuration = RedisSettings["Configuration"];
-        options.InstanceName = RedisSettings["InstanceName"];
+        options.Configuration = redisSettings["Configuration"];
+        options.InstanceName = redisSettings["InstanceName"];
     });
 
     var rabbitMQSettings = configuration.GetSection("RabbitMQ");
-    string rabbitMQHost = rabbitMQSettings["Host"] ?? "tradingsystem-rabbitmq";
-    string rabbitMQUsername = rabbitMQSettings["Username"] ?? "guest";
-    string rabbitMQpassword = rabbitMQSettings["Password"] ?? "guest";
+    var rabbitMQHost = rabbitMQSettings["Host"] ?? "tradingsystem-rabbitmq";
+    var rabbitMQUsername = rabbitMQSettings["Username"] ?? "guest";
+    var rabbitMQpassword = rabbitMQSettings["Password"] ?? "guest";
 
     services.AddMassTransit(x =>
     {
         x.AddConsumer<TradingSystem.Worker.Consumers.ProcessTradeConsumer>();
+        x.AddConsumer<TradingSystem.Worker.Consumers.FetchStockPriceConsumer>();
+
         x.UsingRabbitMq((context, cfg) =>
         {
-            cfg.Host(rabbitMQHost, "/", h => {
+            cfg.Host(rabbitMQHost, "/", h =>
+            {
                 h.Username(rabbitMQUsername);
                 h.Password(rabbitMQpassword);
             });
 
-            // ADDED: Bind the Consumer to the KEDA queue
             cfg.ReceiveEndpoint("process-trade-queue", e =>
             {
                 e.ConfigureConsumer<TradingSystem.Worker.Consumers.ProcessTradeConsumer>(context);
             });
 
-            cfg.ConfigureEndpoints(context);
+            cfg.ReceiveEndpoint("fetch-stock-price-queue", e =>
+            {
+                e.ConfigureConsumer<TradingSystem.Worker.Consumers.FetchStockPriceConsumer>(context);
+            });
         });
     });
 
-
     services.AddQuartz(q =>
     {
-        // --- ADD THIS LINE so Quartz logs executions to the database ---
-        q.AddJobListener<TradingSystem.Worker.Jobs.JobExecutionHistoryListener>(Quartz.Impl.Matchers.GroupMatcher<JobKey>.AnyGroup());
+        q.AddJobListener<JobExecutionHistoryListener>(Quartz.Impl.Matchers.GroupMatcher<JobKey>.AnyGroup());
 
         q.UsePersistentStore(s =>
         {
@@ -75,28 +78,20 @@ builder.ConfigureServices((hostContext, services) =>
             });
         });
 
-
-        // Register the Master Orchestrator Job
         var jobKey = new JobKey("MasterOrchestratorJob");
         q.AddJob<MasterOrchestratorJob>(opts => opts.WithIdentity(jobKey));
         q.AddTrigger(opts => opts
-          .ForJob(jobKey)
-          .WithIdentity("MasterOrchestratorTrigger")
-          .StartNow() // ADDED: Forces the job to run immediately on container start
-          .WithCronSchedule("0 0/5 * * * ?")); // Runs every 5 minutes
+            .ForJob(jobKey)
+            .WithIdentity("MasterOrchestratorTrigger")
+            .StartNow()
+            .WithCronSchedule("0 0/5 * * * ?"));
     });
 
     services.AddQuartzHostedService(options =>
     {
         options.WaitForJobsToComplete = true;
     });
-
 });
 
 var host = builder.Build();
-// Register the job listener globally before running
-var schedulerFactory = host.Services.GetRequiredService<ISchedulerFactory>();
-var scheduler = schedulerFactory.GetScheduler().GetAwaiter().GetResult();
-var listener = host.Services.GetRequiredService<JobExecutionHistoryListener>();
-scheduler.ListenerManager.AddJobListener(listener);
 host.Run();

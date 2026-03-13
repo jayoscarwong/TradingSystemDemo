@@ -1,53 +1,78 @@
-﻿using System.Threading.Tasks;
 using MassTransit;
-using Microsoft.Extensions.Logging;
-using TradingSystem.Application.Commands;
-using System;
-using System.Linq;
-using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
+using Microsoft.Extensions.Caching.Distributed;
 using Microsoft.Extensions.Logging;
+using System.Text.Json;
+using TradingSystem.Application.Commands;
 using TradingSystem.Infrastructure.Data;
-
 
 namespace TradingSystem.Worker.Consumers
 {
-    // This consumer listens for the FetchStockPriceCommand message
     public class FetchStockPriceConsumer : IConsumer<FetchStockPriceCommand>
     {
-        private readonly ILogger<FetchStockPriceConsumer> _logger; 
-        private readonly TradingDbContext _dbContext;
-
-        public FetchStockPriceConsumer(ILogger<FetchStockPriceConsumer> logger,  TradingDbContext dbContext)
+        private static readonly DistributedCacheEntryOptions PriceCacheOptions = new()
         {
-            _logger = logger;           
+            AbsoluteExpirationRelativeToNow = TimeSpan.FromMinutes(5)
+        };
+
+        private readonly ILogger<FetchStockPriceConsumer> _logger;
+        private readonly TradingDbContext _dbContext;
+        private readonly IDistributedCache _redisCache;
+
+        public FetchStockPriceConsumer(
+            ILogger<FetchStockPriceConsumer> logger,
+            TradingDbContext dbContext,
+            IDistributedCache redisCache)
+        {
+            _logger = logger;
             _dbContext = dbContext;
+            _redisCache = redisCache;
         }
 
         public async Task Consume(ConsumeContext<FetchStockPriceCommand> context)
         {
             var command = context.Message;
-            _logger.LogInformation($"[MassTransit] Processing market data for {command.Ticker} on {command.ServerId}...");
+            var normalizedTicker = command.Ticker.Trim().ToUpperInvariant();
+            var nowUtc = DateTime.UtcNow;
 
-            // 1. Fetch the LATEST bid from the database for this specific server/ticker
-            var latestBid = await _dbContext.TradeOrders
-                .Where(t => t.StockTicker == command.Ticker && t.ServerId == command.ServerId)
-                .OrderByDescending(t => t.RowVersion)
-                .FirstOrDefaultAsync();
+            var stock = await _dbContext.StockPrices
+                .AsNoTracking()
+                .SingleOrDefaultAsync(price => price.Ticker == normalizedTicker, context.CancellationToken);
 
-            // 2. Determine the price based on user activity
-            decimal activePrice = latestBid != null ? latestBid.BidAmount : 150.00m; // Default to 150 if no bids exist
-            decimal simulatedVolume = latestBid != null ? 100 : 0; // Spike volume if a bid exists
+            if (stock == null)
+            {
+                _logger.LogWarning(
+                    "Server {ServerId} requested market data for unknown ticker {Ticker}.",
+                    command.ServerId,
+                    normalizedTicker);
+                return;
+            }
 
-            //// 3. Update the StockPrices table dynamically based on the bid
-            //await _stockPriceService.UpdateStockPriceAsync(
-            //    ticker: command.Ticker,
-            //    serverId: command.ServerId,
-            //    orderPrice: activePrice,
-            //    orderVolume: simulatedVolume
-            //);
+            var tradingServer = await _dbContext.TradingServers
+                .SingleOrDefaultAsync(server => server.Id == command.ServerId, context.CancellationToken);
 
-            _logger.LogInformation($"[MassTransit] Applied latest bid. {command.Ticker} updated to ${activePrice:F2} in MySQL.");
+            if (tradingServer != null)
+            {
+                tradingServer.LastPingAt = nowUtc;
+                await _dbContext.SaveChangesAsync(context.CancellationToken);
+            }
+
+            await _redisCache.SetStringAsync(
+                GetPriceCacheKey(normalizedTicker),
+                JsonSerializer.Serialize(stock),
+                PriceCacheOptions,
+                context.CancellationToken);
+
+            _logger.LogInformation(
+                "[Market Poll] Server {ServerId} refreshed {Ticker} at {Price:F4}. Available {AvailableVolume:F4}, queued buy {PendingBuyVolume:F4}, queued sell {PendingSellVolume:F4}.",
+                command.ServerId,
+                normalizedTicker,
+                stock.CurrentPrice,
+                stock.AvailableVolume,
+                stock.PendingBuyVolume,
+                stock.PendingSellVolume);
         }
+
+        private static string GetPriceCacheKey(string ticker) => $"price_{ticker}";
     }
 }
