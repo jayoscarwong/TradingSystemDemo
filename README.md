@@ -372,6 +372,8 @@ $token = $login.accessToken
 $headers = @{ Authorization = "Bearer $token" }
 ```
 
+In Swagger UI, paste only `Bearer <token>` in the authorize dialog. Do not paste `Authorization = ...` and do not include quotes.
+
 ### 5. Create a trader account
 
 ```powershell
