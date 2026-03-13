@@ -5,6 +5,7 @@ using TradingSystem.Application.Commands;
 
 namespace TradingSystem.Worker.Jobs
 {
+    [DisallowConcurrentExecution]
     public class SymbolDataPullJob : IJob
     {
         private readonly IPublishEndpoint _publishEndpoint;

@@ -1,0 +1,27 @@
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: tradingsystem-worker
+  namespace: trading-system
+spec:
+  scaleTargetRef:
+    name: tradingsystem-worker
+  minReplicaCount: 1
+  maxReplicaCount: 8
+  pollingInterval: 15
+  cooldownPeriod: 60
+  triggers:
+    - type: rabbitmq
+      metadata:
+        queueName: process-trade-queue
+        mode: QueueLength
+        value: "20"
+      authenticationRef:
+        name: tradingsystem-rabbitmq-auth
+    - type: rabbitmq
+      metadata:
+        queueName: fetch-stock-price-queue
+        mode: QueueLength
+        value: "50"
+      authenticationRef:
+        name: tradingsystem-rabbitmq-auth

@@ -9,12 +9,14 @@
   
   
   <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.3" />
     <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.3" />
     <PackageReference Include="Microsoft.EntityFrameworkCore.Design" Version="8.0.11">
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
       <PrivateAssets>all</PrivateAssets>
     </PackageReference>
     <PackageReference Include="Microsoft.Extensions.Caching.StackExchangeRedis" Version="10.0.3" />
+    <PackageReference Include="Microsoft.OpenApi" Version="2.4.1" />
     <PackageReference Include="Pomelo.EntityFrameworkCore.MySql" Version="8.0.2" />
     <PackageReference Include="Quartz.Extensions.Hosting" Version="3.16.1" />
     <PackageReference Include="Quartz.Serialization.SystemTextJson" Version="3.16.1" />
@@ -23,6 +25,7 @@
   
   <ItemGroup>
     <ProjectReference Include="..\TradingSystem.Application\TradingSystem.Application.csproj" />
+    <ProjectReference Include="..\TradingSystem.Domain\TradingSystem.Domain.csproj" />
     <ProjectReference Include="..\TradingSystem.Infrastructure\TradingSystem.Infrastructure.csproj" />
     <ProjectReference Include="..\TradingSystem.Worker\TradingSystem.Worker.csproj" />
   </ItemGroup>

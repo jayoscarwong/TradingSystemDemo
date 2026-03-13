@@ -1,350 +1,687 @@
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
-using Quartz;
-using Quartz.Impl.Matchers;
-using System.Linq;
 using TradingSystem.Api.DTOs;
+using TradingSystem.Domain.Entities;
+using TradingSystem.Domain.Scheduling;
+using TradingSystem.Domain.Security;
 using TradingSystem.Infrastructure.Data;
+using TradingSystem.Infrastructure.Services;
 
 namespace TradingSystem.Api.Controllers
 {
     [ApiController]
     [Route("api/[controller]")]
+    [Authorize(Policy = AuthorizationPolicies.TasksRead)]
     public class TasksController : ControllerBase
     {
-        private const string DataPullGroup = "DataPullGroup";
-
-        private readonly ISchedulerFactory _schedulerFactory;
         private readonly TradingDbContext _dbContext;
+        private readonly ScheduledTaskQuartzService _quartzService;
 
-        public TasksController(ISchedulerFactory schedulerFactory, TradingDbContext dbContext)
+        public TasksController(TradingDbContext dbContext, ScheduledTaskQuartzService quartzService)
         {
-            _schedulerFactory = schedulerFactory;
             _dbContext = dbContext;
+            _quartzService = quartzService;
         }
 
         [HttpGet]
-        public async Task<IActionResult> GetAllScheduledJobs(
-            [FromQuery] string? jobName = null,
-            [FromQuery] string? groupName = null,
+        public async Task<IActionResult> GetTasks(
+            [FromQuery] string? name = null,
+            [FromQuery] string? taskType = null,
+            [FromQuery] string? runtimeStatus = null,
             [FromQuery] string? ticker = null,
             [FromQuery] int? serverId = null,
+            [FromQuery] bool? isPaused = null,
+            [FromQuery] bool includeDeleted = false,
             [FromQuery] int page = 1,
             [FromQuery] int pageSize = 20)
         {
             page = Math.Max(1, page);
             pageSize = Math.Clamp(pageSize, 1, 200);
 
-            var scheduler = await _schedulerFactory.GetScheduler();
-            var jobGroupNames = await scheduler.GetJobGroupNames();
-            var jobs = new List<ScheduledJobSummary>();
+            var query = _dbContext.ScheduledTasks.AsNoTracking().AsQueryable();
 
-            foreach (var currentGroup in jobGroupNames)
+            if (!includeDeleted)
             {
-                var groupMatcher = GroupMatcher<JobKey>.GroupEquals(currentGroup);
-                var jobKeys = await scheduler.GetJobKeys(groupMatcher);
-
-                foreach (var jobKey in jobKeys)
-                {
-                    var jobDetail = await scheduler.GetJobDetail(jobKey);
-                    var trigger = (await scheduler.GetTriggersOfJob(jobKey)).OrderBy(t => t.GetNextFireTimeUtc()).FirstOrDefault();
-
-                    jobs.Add(new ScheduledJobSummary(
-                        jobKey.Name,
-                        jobKey.Group,
-                        jobDetail?.JobDataMap.ContainsKey("ServerId") == true ? (int?)jobDetail.JobDataMap.GetInt("ServerId") : null,
-                        jobDetail?.JobDataMap.GetString("Ticker"),
-                        trigger?.GetNextFireTimeUtc(),
-                        trigger?.GetPreviousFireTimeUtc()));
-                }
+                query = query.Where(task => task.RuntimeStatus != ScheduledTaskRuntimeStatuses.Deleted);
             }
 
-            var filteredJobs = jobs
-                .Where(job => string.IsNullOrWhiteSpace(jobName) || job.JobName.Contains(jobName, StringComparison.OrdinalIgnoreCase))
-                .Where(job => string.IsNullOrWhiteSpace(groupName) || string.Equals(job.GroupName, groupName, StringComparison.OrdinalIgnoreCase))
-                .Where(job => string.IsNullOrWhiteSpace(ticker) || string.Equals(job.Ticker, ticker.Trim().ToUpperInvariant(), StringComparison.OrdinalIgnoreCase))
-                .Where(job => !serverId.HasValue || job.ServerId == serverId.Value)
-                .OrderBy(job => job.GroupName)
-                .ThenBy(job => job.JobName)
-                .ToList();
+            if (!string.IsNullOrWhiteSpace(name))
+            {
+                query = query.Where(task => task.Name.Contains(name));
+            }
 
-            var pagedJobs = filteredJobs
+            if (!string.IsNullOrWhiteSpace(taskType))
+            {
+                var normalizedTaskType = NormalizeTaskType(taskType);
+                query = query.Where(task => task.TaskType == normalizedTaskType);
+            }
+
+            if (!string.IsNullOrWhiteSpace(runtimeStatus))
+            {
+                var normalizedRuntimeStatus = NormalizeRuntimeStatus(runtimeStatus);
+                query = query.Where(task => task.RuntimeStatus == normalizedRuntimeStatus);
+            }
+
+            if (!string.IsNullOrWhiteSpace(ticker))
+            {
+                var normalizedTicker = ticker.Trim().ToUpperInvariant();
+                query = query.Where(task => task.Ticker == normalizedTicker);
+            }
+
+            if (serverId.HasValue)
+            {
+                query = query.Where(task => task.ServerId == serverId.Value);
+            }
+
+            if (isPaused.HasValue)
+            {
+                query = query.Where(task => task.IsPaused == isPaused.Value);
+            }
+
+            var totalCount = await query.CountAsync();
+            var tasks = await query
+                .OrderBy(task => task.Id)
                 .Skip((page - 1) * pageSize)
                 .Take(pageSize)
-                .ToList();
+                .ToListAsync();
+
+            var items = tasks.Select(ToSummary);
 
             return Ok(new
             {
                 Page = page,
                 PageSize = pageSize,
-                TotalCount = filteredJobs.Count,
-                Items = pagedJobs
+                TotalCount = totalCount,
+                Items = items
             });
         }
 
-        [HttpGet("{jobName}")]
-        public async Task<IActionResult> GetTaskDetails(string jobName)
+        [HttpGet("monitoring/overview")]
+        public async Task<IActionResult> GetMonitoringOverview()
         {
-            var scheduler = await _schedulerFactory.GetScheduler();
-            var jobKey = await FindJobKeyAsync(scheduler, jobName);
-
-            if (jobKey == null)
-            {
-                return NotFound($"Task '{jobName}' not found.");
-            }
-
-            var jobDetail = await scheduler.GetJobDetail(jobKey);
-            var trigger = (await scheduler.GetTriggersOfJob(jobKey)).OrderBy(t => t.GetNextFireTimeUtc()).FirstOrDefault();
-            var lastExecution = await _dbContext.JobExecutionHistories
+            var tasks = await _dbContext.ScheduledTasks
                 .AsNoTracking()
-                .Where(history => history.JobName == jobKey.Name)
-                .OrderByDescending(history => history.StartTime)
-                .FirstOrDefaultAsync();
-
-            var isRunning = (await scheduler.GetCurrentlyExecutingJobs())
-                .Any(executingJob => executingJob.JobDetail.Key.Equals(jobKey));
+                .Where(task => task.RuntimeStatus != ScheduledTaskRuntimeStatuses.Deleted)
+                .OrderBy(task => task.Id)
+                .ToListAsync();
 
             return Ok(new
             {
-                JobName = jobKey.Name,
-                GroupName = jobKey.Group,
-                ServerId = jobDetail?.JobDataMap.ContainsKey("ServerId") == true ? (int?)jobDetail.JobDataMap.GetInt("ServerId") : null,
-                Ticker = jobDetail?.JobDataMap.GetString("Ticker"),
-                NextFireTime = trigger?.GetNextFireTimeUtc(),
-                PreviousFireTime = trigger?.GetPreviousFireTimeUtc(),
-                LastStatus = lastExecution?.Status,
-                LastTriggeredAt = lastExecution?.StartTime,
-                IsRunning = isRunning
+                TotalTasks = tasks.Count,
+                RunningTasks = tasks.Count(task => task.RuntimeStatus == ScheduledTaskRuntimeStatuses.Running),
+                PausedTasks = tasks.Count(task => task.RuntimeStatus == ScheduledTaskRuntimeStatuses.Paused),
+                FailedTasks = tasks.Count(task => task.LastExecutionStatus == ScheduledTaskRuntimeStatuses.Failed),
+                ScheduledTasks = tasks.Count(task => task.RuntimeStatus == ScheduledTaskRuntimeStatuses.Scheduled),
+                Items = tasks.Select(ToSummary)
             });
         }
 
-        [HttpGet("{jobName}/status")]
-        public async Task<IActionResult> GetTaskStatus(string jobName)
+        [HttpGet("{id:long}")]
+        public async Task<IActionResult> GetTaskDetails(long id)
         {
-            var scheduler = await _schedulerFactory.GetScheduler();
-            var jobKey = await FindJobKeyAsync(scheduler, jobName);
+            var task = await _dbContext.ScheduledTasks
+                .AsNoTracking()
+                .SingleOrDefaultAsync(existing => existing.Id == id);
+
+            if (task == null)
+            {
+                return NotFound(new { Message = $"Task {id} was not found." });
+            }
 
             var history = await _dbContext.JobExecutionHistories
                 .AsNoTracking()
-                .Where(entry => entry.JobName == jobName)
+                .Where(entry => entry.ScheduledTaskId == id)
+                .OrderByDescending(entry => entry.StartTime)
+                .Take(10)
+                .ToListAsync();
+
+            return Ok(new
+            {
+                Task = ToDetail(task),
+                RecentHistory = history
+            });
+        }
+
+        [HttpGet("{id:long}/status")]
+        public async Task<IActionResult> GetTaskStatus(long id)
+        {
+            var task = await _dbContext.ScheduledTasks
+                .AsNoTracking()
+                .SingleOrDefaultAsync(existing => existing.Id == id);
+
+            if (task == null)
+            {
+                return NotFound(new { Message = $"Task {id} was not found." });
+            }
+
+            var history = await _dbContext.JobExecutionHistories
+                .AsNoTracking()
+                .Where(entry => entry.ScheduledTaskId == id)
                 .OrderByDescending(entry => entry.StartTime)
                 .Take(20)
                 .ToListAsync();
 
-            if (jobKey == null && !history.Any())
-            {
-                return NotFound(new { Message = $"No execution history or active task found for job: {jobName}" });
-            }
-
-            var trigger = jobKey == null
-                ? null
-                : (await scheduler.GetTriggersOfJob(jobKey)).OrderBy(t => t.GetNextFireTimeUtc()).FirstOrDefault();
-
-            var completedExecutions = history
-                .Where(entry => entry.EndTime >= entry.StartTime)
-                .Select(entry => (entry.EndTime - entry.StartTime).TotalMilliseconds)
-                .ToList();
-
-            var isRunning = jobKey != null && (await scheduler.GetCurrentlyExecutingJobs())
-                .Any(executingJob => executingJob.JobDetail.Key.Equals(jobKey));
-
             return Ok(new
             {
-                JobName = jobKey?.Name ?? jobName,
-                GroupName = jobKey?.Group,
-                IsRunning = isRunning,
-                LastTriggeredAt = history.FirstOrDefault()?.StartTime,
-                NextFireTime = trigger?.GetNextFireTimeUtc(),
-                AverageDurationMs = completedExecutions.Any() ? completedExecutions.Average() : (double?)null,
-                ExecutionCount = history.Count,
+                Task = ToDetail(task),
+                CurrentState = new
+                {
+                    task.RuntimeStatus,
+                    task.LastExecutionStatus,
+                    task.IsPaused,
+                    IsRunning = task.RuntimeStatus == ScheduledTaskRuntimeStatuses.Running,
+                    task.LastTriggeredAt,
+                    task.CurrentExecutionStartedAt,
+                    task.LastCompletedAt,
+                    task.NextFireTime,
+                    task.LastSchedulerInstance,
+                    task.LastError
+                },
+                Metrics = new
+                {
+                    task.ExecutionCount,
+                    task.FailureCount,
+                    task.LastExecutionDurationMs,
+                    task.AverageDurationMs
+                },
                 History = history
             });
         }
 
         [HttpPost]
-        public async Task<IActionResult> CreateTask([FromBody] CreateTaskRequest request)
+        [Authorize(Policy = AuthorizationPolicies.TasksManage)]
+        public async Task<IActionResult> CreateTask([FromBody] CreateTaskRequest request, CancellationToken cancellationToken)
         {
-            var scheduler = await _schedulerFactory.GetScheduler();
-            var jobKey = new JobKey(request.JobName, DataPullGroup);
-
-            if (await scheduler.CheckExists(jobKey))
+            var normalizedName = request.Name.Trim();
+            if (string.IsNullOrWhiteSpace(normalizedName))
             {
-                return Conflict($"Task '{request.JobName}' already exists.");
+                return BadRequest(new { Message = "Name is required." });
             }
 
-            var jobType = ResolveSymbolDataPullJobType();
-            var normalizedTicker = request.Ticker.Trim().ToUpperInvariant();
-
-            var job = JobBuilder.Create(jobType)
-                .WithIdentity(jobKey)
-                .UsingJobData("ServerId", request.ServerId)
-                .UsingJobData("Ticker", normalizedTicker)
-                .Build();
-
-            var trigger = TriggerBuilder.Create()
-                .WithIdentity($"Trigger-{request.JobName}", DataPullGroup)
-                .ForJob(jobKey)
-                .WithCronSchedule(request.CronExpression)
-                .Build();
-
-            await scheduler.ScheduleJob(job, trigger);
-
-            return Created($"/api/tasks/{request.JobName}", new
+            if (string.Equals(request.TaskType, ScheduledTaskTypes.MasterOrchestrator, StringComparison.OrdinalIgnoreCase))
             {
-                Message = "Task successfully scheduled.",
-                JobName = request.JobName,
-                request.ServerId,
-                Ticker = normalizedTicker,
-                request.CronExpression
-            });
+                return BadRequest(new { Message = "The master orchestrator is system-managed. Update the existing master task instead of creating a duplicate." });
+            }
+
+            if (await _dbContext.ScheduledTasks.AnyAsync(task => task.Name == normalizedName, cancellationToken))
+            {
+                return Conflict(new { Message = $"Task name '{normalizedName}' already exists." });
+            }
+
+            var task = new ScheduledTask
+            {
+                Name = normalizedName,
+                Description = request.Description?.Trim(),
+                TaskType = NormalizeTaskType(request.TaskType),
+                ScheduleType = NormalizeScheduleType(request.ScheduleType),
+                CronExpression = NormalizeCronExpression(request.CronExpression),
+                IntervalSeconds = request.IntervalSeconds,
+                RepeatCount = request.RepeatCount,
+                ServerId = request.ServerId,
+                Ticker = NormalizeTicker(request.Ticker),
+                IsSystemTask = false,
+                IsEnabled = true,
+                IsPaused = false,
+                AllowConcurrentExecution = false,
+                RuntimeStatus = ScheduledTaskRuntimeStatuses.Scheduled,
+                CreatedAt = DateTime.UtcNow,
+                UpdatedAt = DateTime.UtcNow
+            };
+
+            var validationError = await ValidateTaskAsync(task, cancellationToken);
+            if (validationError != null)
+            {
+                return validationError;
+            }
+
+            _dbContext.ScheduledTasks.Add(task);
+            await _dbContext.SaveChangesAsync(cancellationToken);
+
+            var schedulerState = await _quartzService.UpsertAsync(task, cancellationToken);
+            ApplySchedulerState(task, schedulerState);
+            await _dbContext.SaveChangesAsync(cancellationToken);
+
+            return Created($"/api/tasks/{task.Id}", ToDetail(task));
         }
 
-        [HttpPut("{jobName}")]
-        public async Task<IActionResult> UpdateTask(string jobName, [FromBody] UpdateTaskRequest request)
+        [HttpPut("{id:long}")]
+        [Authorize(Policy = AuthorizationPolicies.TasksManage)]
+        public async Task<IActionResult> UpdateTask(long id, [FromBody] UpdateTaskRequest request, CancellationToken cancellationToken)
         {
-            if (string.IsNullOrWhiteSpace(request.CronExpression)
+            var task = await _dbContext.ScheduledTasks.SingleOrDefaultAsync(existing => existing.Id == id, cancellationToken);
+            if (task == null)
+            {
+                return NotFound(new { Message = $"Task {id} was not found." });
+            }
+
+            if (task.RuntimeStatus == ScheduledTaskRuntimeStatuses.Deleted)
+            {
+                return Conflict(new { Message = $"Task {id} was deleted. Create a new task instead." });
+            }
+
+            if (request.Name == null
+                && request.Description == null
+                && request.ScheduleType == null
+                && request.CronExpression == null
+                && request.IntervalSeconds == null
+                && request.RepeatCount == null
                 && request.ServerId == null
-                && string.IsNullOrWhiteSpace(request.Ticker))
+                && request.Ticker == null)
             {
-                return BadRequest("At least one field must be supplied to update a task.");
+                return BadRequest(new { Message = "At least one field must be supplied to update a task." });
             }
 
-            var scheduler = await _schedulerFactory.GetScheduler();
-            var jobKey = await FindJobKeyAsync(scheduler, jobName);
-
-            if (jobKey == null)
+            if (task.IsSystemTask && task.TaskType == ScheduledTaskTypes.SymbolDataPull)
             {
-                return NotFound($"Task '{jobName}' not found.");
-            }
-
-            var existingJob = await scheduler.GetJobDetail(jobKey);
-            if (existingJob == null)
-            {
-                return NotFound($"Task '{jobName}' not found.");
-            }
-
-            var updatedServerId = request.ServerId
-                ?? (existingJob.JobDataMap.ContainsKey("ServerId") ? existingJob.JobDataMap.GetInt("ServerId") : 0);
-
-            if (updatedServerId <= 0)
-            {
-                return BadRequest("A valid ServerId is required.");
-            }
-
-            var updatedTicker = string.IsNullOrWhiteSpace(request.Ticker)
-                ? existingJob.JobDataMap.GetString("Ticker")
-                : request.Ticker.Trim().ToUpperInvariant();
-
-            if (string.IsNullOrWhiteSpace(updatedTicker))
-            {
-                return BadRequest("Ticker is required.");
-            }
-
-            var updatedJob = JobBuilder.Create(existingJob.JobType)
-                .WithIdentity(jobKey)
-                .StoreDurably(existingJob.Durable)
-                .RequestRecovery(existingJob.RequestsRecovery)
-                .UsingJobData("ServerId", updatedServerId)
-                .UsingJobData("Ticker", updatedTicker)
-                .Build();
-
-            await scheduler.AddJob(updatedJob, true, true);
-
-            if (!string.IsNullOrWhiteSpace(request.CronExpression))
-            {
-                var existingTrigger = (await scheduler.GetTriggersOfJob(jobKey)).FirstOrDefault();
-                if (existingTrigger == null)
+                if (request.ServerId.HasValue || request.Ticker != null)
                 {
-                    return BadRequest($"No active trigger found for job '{jobName}'.");
+                    return Conflict(new { Message = "System-managed polling tasks cannot be reassigned to a different server or ticker." });
+                }
+            }
+
+            if (!string.IsNullOrWhiteSpace(request.Name))
+            {
+                var normalizedName = request.Name.Trim();
+                var nameExists = await _dbContext.ScheduledTasks.AnyAsync(existing => existing.Id != id && existing.Name == normalizedName, cancellationToken);
+                if (nameExists)
+                {
+                    return Conflict(new { Message = $"Task name '{normalizedName}' already exists." });
                 }
 
-                var updatedTrigger = TriggerBuilder.Create()
-                    .WithIdentity(existingTrigger.Key)
-                    .ForJob(jobKey)
-                    .WithCronSchedule(request.CronExpression)
-                    .Build();
-
-                await scheduler.RescheduleJob(existingTrigger.Key, updatedTrigger);
+                task.Name = normalizedName;
             }
 
-            return Ok(new
+            if (request.Description != null)
             {
-                Message = $"Successfully updated task '{jobName}'.",
-                JobName = jobKey.Name,
-                ServerId = updatedServerId,
-                Ticker = updatedTicker,
-                request.CronExpression
-            });
-        }
-
-        [HttpPut("{jobName}/schedule")]
-        public Task<IActionResult> UpdateJobSchedule(string jobName, [FromBody] UpdateScheduleRequest request)
-        {
-            return UpdateTask(jobName, new UpdateTaskRequest
-            {
-                CronExpression = request.CronExpression
-            });
-        }
-
-        [HttpDelete("{jobName}")]
-        public async Task<IActionResult> DeleteTask(string jobName)
-        {
-            var scheduler = await _schedulerFactory.GetScheduler();
-            var jobKey = await FindJobKeyAsync(scheduler, jobName);
-
-            if (jobKey == null)
-            {
-                return NotFound($"Task '{jobName}' not found.");
+                task.Description = string.IsNullOrWhiteSpace(request.Description)
+                    ? null
+                    : request.Description.Trim();
             }
 
-            await scheduler.DeleteJob(jobKey);
-            return Ok(new { Message = $"Task '{jobName}' successfully deleted." });
-        }
-
-        private static async Task<JobKey?> FindJobKeyAsync(IScheduler scheduler, string jobName)
-        {
-            var preferredKey = new JobKey(jobName, DataPullGroup);
-            if (await scheduler.CheckExists(preferredKey))
+            if (request.ScheduleType != null)
             {
-                return preferredKey;
+                task.ScheduleType = NormalizeScheduleType(request.ScheduleType);
             }
 
-            foreach (var group in await scheduler.GetJobGroupNames())
+            if (request.CronExpression != null || task.ScheduleType == ScheduledTaskScheduleTypes.Cron)
             {
-                var candidateKey = new JobKey(jobName, group);
-                if (await scheduler.CheckExists(candidateKey))
+                task.CronExpression = NormalizeCronExpression(request.CronExpression ?? task.CronExpression);
+            }
+
+            if (request.IntervalSeconds.HasValue)
+            {
+                task.IntervalSeconds = request.IntervalSeconds.Value;
+            }
+
+            if (request.RepeatCount.HasValue)
+            {
+                task.RepeatCount = request.RepeatCount.Value;
+            }
+
+            if (request.ServerId.HasValue)
+            {
+                task.ServerId = request.ServerId.Value;
+            }
+
+            if (request.Ticker != null)
+            {
+                task.Ticker = NormalizeTicker(request.Ticker);
+            }
+
+            task.UpdatedAt = DateTime.UtcNow;
+
+            var validationError = await ValidateTaskAsync(task, cancellationToken);
+            if (validationError != null)
+            {
+                return validationError;
+            }
+
+            var schedulerState = await _quartzService.UpsertAsync(task, cancellationToken);
+            ApplySchedulerState(task, schedulerState);
+
+            await _dbContext.SaveChangesAsync(cancellationToken);
+            return Ok(ToDetail(task));
+        }
+
+        [HttpDelete("{id:long}")]
+        [Authorize(Policy = AuthorizationPolicies.TasksManage)]
+        public async Task<IActionResult> DeleteTask(long id, CancellationToken cancellationToken)
+        {
+            var task = await _dbContext.ScheduledTasks.SingleOrDefaultAsync(existing => existing.Id == id, cancellationToken);
+            if (task == null)
+            {
+                return NotFound(new { Message = $"Task {id} was not found." });
+            }
+
+            if (task.IsSystemTask && task.TaskType == ScheduledTaskTypes.MasterOrchestrator)
+            {
+                return Conflict(new { Message = "The master orchestrator cannot be deleted. Use the shutdown endpoint if you need to stop it temporarily." });
+            }
+
+            await _quartzService.DeleteAsync(id, cancellationToken);
+
+            task.IsEnabled = false;
+            task.IsPaused = false;
+            task.RuntimeStatus = ScheduledTaskRuntimeStatuses.Deleted;
+            task.NextFireTime = null;
+            task.CurrentExecutionStartedAt = null;
+            task.UpdatedAt = DateTime.UtcNow;
+
+            await _dbContext.SaveChangesAsync(cancellationToken);
+            return Ok(new { Message = $"Task {id} was removed from the scheduler." });
+        }
+
+        [HttpPost("{id:long}/shutdown")]
+        [Authorize(Policy = AuthorizationPolicies.TasksManage)]
+        public async Task<IActionResult> ShutdownTask(long id, CancellationToken cancellationToken)
+        {
+            var task = await _dbContext.ScheduledTasks.SingleOrDefaultAsync(existing => existing.Id == id, cancellationToken);
+            if (task == null)
+            {
+                return NotFound(new { Message = $"Task {id} was not found." });
+            }
+
+            if (task.RuntimeStatus == ScheduledTaskRuntimeStatuses.Deleted)
+            {
+                return Conflict(new { Message = $"Task {id} was deleted and cannot be shut down." });
+            }
+
+            task.IsPaused = true;
+            task.RuntimeStatus = ScheduledTaskRuntimeStatuses.Paused;
+            task.UpdatedAt = DateTime.UtcNow;
+
+            await _quartzService.PauseAsync(id, cancellationToken);
+            var schedulerState = await _quartzService.ReadStateAsync(id, cancellationToken);
+            if (schedulerState != null)
+            {
+                ApplySchedulerState(task, schedulerState);
+            }
+
+            await _dbContext.SaveChangesAsync(cancellationToken);
+            return Ok(ToDetail(task));
+        }
+
+        [HttpPost("{id:long}/start")]
+        [Authorize(Policy = AuthorizationPolicies.TasksManage)]
+        public async Task<IActionResult> StartTask(long id, CancellationToken cancellationToken)
+        {
+            var task = await _dbContext.ScheduledTasks.SingleOrDefaultAsync(existing => existing.Id == id, cancellationToken);
+            if (task == null)
+            {
+                return NotFound(new { Message = $"Task {id} was not found." });
+            }
+
+            if (task.RuntimeStatus == ScheduledTaskRuntimeStatuses.Deleted)
+            {
+                return Conflict(new { Message = $"Task {id} was deleted and cannot be started again." });
+            }
+
+            task.IsEnabled = true;
+            task.IsPaused = false;
+            task.RuntimeStatus = ScheduledTaskRuntimeStatuses.Scheduled;
+            task.UpdatedAt = DateTime.UtcNow;
+
+            var validationError = await ValidateTaskAsync(task, cancellationToken);
+            if (validationError != null)
+            {
+                return validationError;
+            }
+
+            var schedulerState = await _quartzService.UpsertAsync(task, cancellationToken);
+            ApplySchedulerState(task, schedulerState);
+
+            await _dbContext.SaveChangesAsync(cancellationToken);
+            return Ok(ToDetail(task));
+        }
+
+        [HttpPost("{id:long}/run-now")]
+        [Authorize(Policy = AuthorizationPolicies.TasksManage)]
+        public async Task<IActionResult> RunNow(long id, CancellationToken cancellationToken)
+        {
+            var task = await _dbContext.ScheduledTasks
+                .AsNoTracking()
+                .SingleOrDefaultAsync(existing => existing.Id == id, cancellationToken);
+
+            if (task == null)
+            {
+                return NotFound(new { Message = $"Task {id} was not found." });
+            }
+
+            if (task.RuntimeStatus == ScheduledTaskRuntimeStatuses.Deleted)
+            {
+                return Conflict(new { Message = $"Task {id} was deleted and cannot be triggered." });
+            }
+
+            if (task.IsPaused)
+            {
+                return Conflict(new { Message = $"Task {id} is paused. Start it before triggering an immediate run." });
+            }
+
+            await _quartzService.TriggerNowAsync(id, cancellationToken);
+            return Accepted(new { Message = $"Task {id} was sent to Quartz for immediate execution." });
+        }
+
+        private async Task<IActionResult?> ValidateTaskAsync(ScheduledTask task, CancellationToken cancellationToken)
+        {
+            if (task.TaskType != ScheduledTaskTypes.SymbolDataPull && task.TaskType != ScheduledTaskTypes.MasterOrchestrator)
+            {
+                return BadRequest(new { Message = $"Unsupported task type '{task.TaskType}'." });
+            }
+
+            if (task.ScheduleType != ScheduledTaskScheduleTypes.Cron && task.ScheduleType != ScheduledTaskScheduleTypes.Simple)
+            {
+                return BadRequest(new { Message = $"Unsupported schedule type '{task.ScheduleType}'." });
+            }
+
+            if (task.ScheduleType == ScheduledTaskScheduleTypes.Cron)
+            {
+                if (string.IsNullOrWhiteSpace(task.CronExpression))
                 {
-                    return candidateKey;
+                    return BadRequest(new { Message = "CronExpression is required when ScheduleType is Cron." });
                 }
+
+                task.IntervalSeconds = null;
+                task.RepeatCount = null;
+            }
+            else
+            {
+                if (!task.IntervalSeconds.HasValue || task.IntervalSeconds.Value <= 0)
+                {
+                    return BadRequest(new { Message = "IntervalSeconds must be greater than zero when ScheduleType is Simple." });
+                }
+
+                task.CronExpression = null;
+            }
+
+            if (task.TaskType == ScheduledTaskTypes.SymbolDataPull)
+            {
+                if (!task.ServerId.HasValue || task.ServerId.Value <= 0)
+                {
+                    return BadRequest(new { Message = "ServerId is required for SymbolDataPull tasks." });
+                }
+
+                if (string.IsNullOrWhiteSpace(task.Ticker))
+                {
+                    return BadRequest(new { Message = "Ticker is required for SymbolDataPull tasks." });
+                }
+
+                var serverExists = await _dbContext.TradingServers
+                    .AsNoTracking()
+                    .AnyAsync(server => server.Id == task.ServerId.Value && server.IsEnabled, cancellationToken);
+
+                if (!serverExists)
+                {
+                    return BadRequest(new { Message = $"Trading server {task.ServerId.Value} is not enabled." });
+                }
+
+                var stockExists = await _dbContext.StockPrices
+                    .AsNoTracking()
+                    .AnyAsync(stock => stock.Ticker == task.Ticker, cancellationToken);
+
+                if (!stockExists)
+                {
+                    return NotFound(new { Message = $"Ticker '{task.Ticker}' is not configured." });
+                }
+            }
+
+            if (task.TaskType == ScheduledTaskTypes.MasterOrchestrator)
+            {
+                task.ServerId = null;
+                task.Ticker = null;
             }
 
             return null;
         }
 
-        private static Type ResolveSymbolDataPullJobType()
+        private static void ApplySchedulerState(ScheduledTask task, SchedulerTaskState schedulerState)
         {
-            return Type.GetType("TradingSystem.Worker.Jobs.SymbolDataPullJob, TradingSystem.Worker")
-                ?? throw new InvalidOperationException("TradingSystem.Worker.Jobs.SymbolDataPullJob could not be loaded by the API host.");
+            task.NextFireTime = schedulerState.NextFireTime;
+            task.RuntimeStatus = task.IsPaused
+                ? ScheduledTaskRuntimeStatuses.Paused
+                : ScheduledTaskRuntimeStatuses.Scheduled;
+            task.UpdatedAt = DateTime.UtcNow;
         }
 
-        private sealed record ScheduledJobSummary(
-            string JobName,
-            string GroupName,
-            int? ServerId,
-            string? Ticker,
-            DateTimeOffset? NextFireTime,
-            DateTimeOffset? PreviousFireTime);
-
-        public class UpdateScheduleRequest
+        private static object ToSummary(ScheduledTask task)
         {
-            public string CronExpression { get; set; } = string.Empty;
+            return new
+            {
+                task.Id,
+                task.Name,
+                task.TaskType,
+                task.ScheduleType,
+                task.ServerId,
+                task.Ticker,
+                task.IsSystemTask,
+                task.IsEnabled,
+                task.IsPaused,
+                task.RuntimeStatus,
+                task.LastExecutionStatus,
+                task.LastTriggeredAt,
+                task.LastCompletedAt,
+                task.NextFireTime,
+                task.ExecutionCount,
+                task.FailureCount,
+                task.AverageDurationMs,
+                task.LastSchedulerInstance
+            };
         }
 
-        public class UpdateTaskRequest
+        private static object ToDetail(ScheduledTask task)
         {
-            public string? CronExpression { get; set; }
-            public int? ServerId { get; set; }
-            public string? Ticker { get; set; }
+            return new
+            {
+                task.Id,
+                task.Name,
+                task.Description,
+                task.TaskType,
+                task.ScheduleType,
+                task.CronExpression,
+                task.IntervalSeconds,
+                task.RepeatCount,
+                task.ServerId,
+                task.Ticker,
+                task.IsSystemTask,
+                task.IsEnabled,
+                task.IsPaused,
+                task.RuntimeStatus,
+                task.LastExecutionStatus,
+                task.LastExecutionDurationMs,
+                task.LastTriggeredAt,
+                task.CurrentExecutionStartedAt,
+                task.LastCompletedAt,
+                task.NextFireTime,
+                task.ExecutionCount,
+                task.FailureCount,
+                task.AverageDurationMs,
+                task.LastSchedulerInstance,
+                task.LastError,
+                task.CreatedAt,
+                task.UpdatedAt
+            };
+        }
+
+        private static string NormalizeTaskType(string taskType)
+        {
+            var normalized = taskType.Trim();
+            if (string.Equals(normalized, ScheduledTaskTypes.MasterOrchestrator, StringComparison.OrdinalIgnoreCase))
+            {
+                return ScheduledTaskTypes.MasterOrchestrator;
+            }
+
+            if (string.Equals(normalized, ScheduledTaskTypes.SymbolDataPull, StringComparison.OrdinalIgnoreCase))
+            {
+                return ScheduledTaskTypes.SymbolDataPull;
+            }
+
+            return normalized;
+        }
+
+        private static string NormalizeScheduleType(string scheduleType)
+        {
+            var normalized = scheduleType.Trim();
+            if (string.Equals(normalized, ScheduledTaskScheduleTypes.Cron, StringComparison.OrdinalIgnoreCase))
+            {
+                return ScheduledTaskScheduleTypes.Cron;
+            }
+
+            if (string.Equals(normalized, ScheduledTaskScheduleTypes.Simple, StringComparison.OrdinalIgnoreCase))
+            {
+                return ScheduledTaskScheduleTypes.Simple;
+            }
+
+            return normalized;
+        }
+
+        private static string? NormalizeCronExpression(string? cronExpression)
+        {
+            return string.IsNullOrWhiteSpace(cronExpression)
+                ? null
+                : cronExpression.Trim();
+        }
+
+        private static string NormalizeRuntimeStatus(string runtimeStatus)
+        {
+            var normalized = runtimeStatus.Trim();
+            if (string.Equals(normalized, ScheduledTaskRuntimeStatuses.Scheduled, StringComparison.OrdinalIgnoreCase))
+            {
+                return ScheduledTaskRuntimeStatuses.Scheduled;
+            }
+
+            if (string.Equals(normalized, ScheduledTaskRuntimeStatuses.Running, StringComparison.OrdinalIgnoreCase))
+            {
+                return ScheduledTaskRuntimeStatuses.Running;
+            }
+
+            if (string.Equals(normalized, ScheduledTaskRuntimeStatuses.Completed, StringComparison.OrdinalIgnoreCase))
+            {
+                return ScheduledTaskRuntimeStatuses.Completed;
+            }
+
+            if (string.Equals(normalized, ScheduledTaskRuntimeStatuses.Failed, StringComparison.OrdinalIgnoreCase))
+            {
+                return ScheduledTaskRuntimeStatuses.Failed;
+            }
+
+            if (string.Equals(normalized, ScheduledTaskRuntimeStatuses.Paused, StringComparison.OrdinalIgnoreCase))
+            {
+                return ScheduledTaskRuntimeStatuses.Paused;
+            }
+
+            if (string.Equals(normalized, ScheduledTaskRuntimeStatuses.Deleted, StringComparison.OrdinalIgnoreCase))
+            {
+                return ScheduledTaskRuntimeStatuses.Deleted;
+            }
+
+            return normalized;
+        }
+
+        private static string? NormalizeTicker(string? ticker)
+        {
+            return string.IsNullOrWhiteSpace(ticker)
+                ? null
+                : ticker.Trim().ToUpperInvariant();
         }
     }
 }

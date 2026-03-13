@@ -3,8 +3,10 @@ using System.Threading.Tasks;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Quartz;
-using Quartz.Impl.Matchers;
+using TradingSystem.Domain.Entities;
+using TradingSystem.Domain.Scheduling;
 using TradingSystem.Infrastructure.Data;
+using TradingSystem.Infrastructure.Services;
 
 namespace TradingSystem.Worker.Jobs
 {
@@ -20,66 +22,108 @@ namespace TradingSystem.Worker.Jobs
 
         public async Task Execute(IJobExecutionContext context)
         {
-            var scheduler = context.Scheduler;
-
             using var scope = _scopeFactory.CreateScope();
             var dbContext = scope.ServiceProvider.GetRequiredService<TradingDbContext>();
+            var quartzService = scope.ServiceProvider.GetRequiredService<ScheduledTaskQuartzService>();
+            var nowUtc = DateTime.UtcNow;
 
             var activeServers = await dbContext.TradingServers.Where(s => s.IsEnabled).ToListAsync();
-            var activeServerIds = activeServers.Select(s => s.Id).ToList();
-
-            // FIX: Fetch all active tickers dynamically from the database
             var activeTickers = await dbContext.StockPrices.Select(s => s.Ticker).ToListAsync();
+            var desiredPairs = activeServers
+                .SelectMany(server => activeTickers.Select(ticker => new { server.Id, Ticker = ticker }))
+                .ToList();
 
-            // 1. Schedule new jobs for every Server + Ticker combination
-            foreach (var server in activeServers)
+            var systemPullTasks = await dbContext.ScheduledTasks
+                .Where(task => task.IsSystemTask && task.TaskType == ScheduledTaskTypes.SymbolDataPull)
+                .ToListAsync();
+
+            foreach (var pair in desiredPairs)
             {
-                foreach (var ticker in activeTickers)
+                var task = systemPullTasks.FirstOrDefault(existing =>
+                    existing.ServerId == pair.Id &&
+                    string.Equals(existing.Ticker, pair.Ticker, StringComparison.OrdinalIgnoreCase));
+
+                if (task == null)
                 {
-                    // Job Name Format: DataPullJob-{ServerId}-{Ticker}
-                    var jobKey = new JobKey($"DataPullJob-{server.Id}-{ticker}", "DataPullGroup");
-
-                    if (!await scheduler.CheckExists(jobKey))
+                    task = new ScheduledTask
                     {
-                        var job = JobBuilder.Create<SymbolDataPullJob>()
-                           .WithIdentity(jobKey)
-                           .UsingJobData("ServerId", server.Id)
-                           .UsingJobData("Ticker", ticker) // <-- Inject dynamic ticker here
-                           .Build();
+                        Name = $"Market data pull S{pair.Id} {pair.Ticker}",
+                        Description = $"System-managed polling task for server {pair.Id} and ticker {pair.Ticker}.",
+                        TaskType = ScheduledTaskTypes.SymbolDataPull,
+                        ScheduleType = ScheduledTaskScheduleTypes.Simple,
+                        IntervalSeconds = 10,
+                        RepeatCount = null,
+                        ServerId = pair.Id,
+                        Ticker = pair.Ticker,
+                        IsSystemTask = true,
+                        IsEnabled = true,
+                        IsPaused = false,
+                        AllowConcurrentExecution = false,
+                        RuntimeStatus = ScheduledTaskRuntimeStatuses.Scheduled,
+                        CreatedAt = nowUtc,
+                        UpdatedAt = nowUtc
+                    };
 
-                        var trigger = TriggerBuilder.Create()
-                           .WithIdentity($"Trigger-{server.Id}-{ticker}", "DataPullGroup")
-                           .StartNow()
-                           .WithSimpleSchedule(x => x.WithIntervalInSeconds(10).RepeatForever())
-                           .Build();
-
-                        await scheduler.ScheduleJob(job, trigger);
-                    }
-                }
-            }
-
-            // 2. Clean up old jobs if a server is disabled OR a ticker is removed
-            var existingJobKeys = await scheduler.GetJobKeys(GroupMatcher<JobKey>.GroupEquals("DataPullGroup"));
-            foreach (var jobKey in existingJobKeys)
-            {
-                var parts = jobKey.Name.Split('-');
-
-                // Ensure name matches expected format: DataPullJob-{id}-{ticker}
-                if (parts.Length >= 3 && int.TryParse(parts[1], out int serverIdFromJob))
-                {
-                    string tickerFromJob = parts[2];
-
-                    if (!activeServerIds.Contains(serverIdFromJob) || !activeTickers.Contains(tickerFromJob))
-                    {
-                        await scheduler.DeleteJob(jobKey);
-                    }
+                    dbContext.ScheduledTasks.Add(task);
+                    systemPullTasks.Add(task);
                 }
                 else
                 {
-                    // Delete malformed/legacy jobs
-                    await scheduler.DeleteJob(jobKey);
+                    if (string.IsNullOrWhiteSpace(task.ScheduleType))
+                    {
+                        task.ScheduleType = ScheduledTaskScheduleTypes.Simple;
+                    }
+
+                    if (!task.IntervalSeconds.HasValue || task.IntervalSeconds.Value <= 0)
+                    {
+                        task.IntervalSeconds = 10;
+                    }
+
+                    task.IsEnabled = true;
+                    task.IsSystemTask = true;
+                    task.TaskType = ScheduledTaskTypes.SymbolDataPull;
+                    task.ServerId = pair.Id;
+                    task.Ticker = pair.Ticker;
+                    task.RuntimeStatus = task.IsPaused
+                        ? ScheduledTaskRuntimeStatuses.Paused
+                        : ScheduledTaskRuntimeStatuses.Scheduled;
+                    task.UpdatedAt = nowUtc;
                 }
             }
+
+            await dbContext.SaveChangesAsync();
+
+            foreach (var task in systemPullTasks.Where(task =>
+                         task.IsEnabled &&
+                         task.ServerId.HasValue &&
+                         !string.IsNullOrWhiteSpace(task.Ticker) &&
+                         desiredPairs.Any(pair => pair.Id == task.ServerId.Value &&
+                                                  string.Equals(pair.Ticker, task.Ticker, StringComparison.OrdinalIgnoreCase))))
+            {
+                var state = await quartzService.UpsertAsync(task, context.CancellationToken);
+                task.NextFireTime = state.NextFireTime;
+                task.RuntimeStatus = task.IsPaused
+                    ? ScheduledTaskRuntimeStatuses.Paused
+                    : ScheduledTaskRuntimeStatuses.Scheduled;
+                task.UpdatedAt = nowUtc;
+            }
+
+            foreach (var task in systemPullTasks.Where(task =>
+                         !task.ServerId.HasValue ||
+                         string.IsNullOrWhiteSpace(task.Ticker) ||
+                         !desiredPairs.Any(pair => pair.Id == task.ServerId.Value &&
+                                                  string.Equals(pair.Ticker, task.Ticker, StringComparison.OrdinalIgnoreCase))))
+            {
+                await quartzService.DeleteAsync(task.Id, context.CancellationToken);
+                task.IsEnabled = false;
+                task.IsPaused = false;
+                task.NextFireTime = null;
+                task.CurrentExecutionStartedAt = null;
+                task.RuntimeStatus = ScheduledTaskRuntimeStatuses.Deleted;
+                task.UpdatedAt = nowUtc;
+            }
+
+            await dbContext.SaveChangesAsync();
         }
     }
 }

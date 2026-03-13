@@ -1,10 +1,14 @@
+using System.Security.Claims;
+using System.Text.Json;
 using MassTransit;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.Caching.Distributed;
-using System.Text.Json;
+using TradingSystem.Api.DTOs;
 using TradingSystem.Application.Commands;
 using TradingSystem.Domain.Entities;
+using TradingSystem.Domain.Security;
 using TradingSystem.Infrastructure.Data;
 
 namespace TradingSystem.Api.Controllers
@@ -30,8 +34,24 @@ namespace TradingSystem.Api.Controllers
         }
 
         [HttpPost]
+        [Authorize(Policy = AuthorizationPolicies.TradesPlace)]
         public async Task<IActionResult> PlaceBid([FromBody] PlaceBidRequest request)
         {
+            var tradeAccountIdClaim = User.FindFirstValue(ClaimTypes.NameIdentifier);
+            if (!long.TryParse(tradeAccountIdClaim, out var tradeAccountId))
+            {
+                return Unauthorized(new { Message = "Authenticated trade account information is missing from the token." });
+            }
+
+            var tradeAccountExists = await _dbContext.TradeAccounts
+                .AsNoTracking()
+                .AnyAsync(account => account.Id == tradeAccountId && !account.IsDisabled);
+
+            if (!tradeAccountExists)
+            {
+                return Unauthorized(new { Message = "The authenticated trade account is disabled or no longer exists." });
+            }
+
             if (request.OrderId == Guid.Empty)
             {
                 return BadRequest(new { Message = "OrderId must be a non-empty GUID." });
@@ -63,13 +83,14 @@ namespace TradingSystem.Api.Controllers
 
             if (existingOrder is not null)
             {
-                return BuildDuplicateRequestResponse(existingOrder, request, normalizedTicker);
+                return BuildDuplicateRequestResponse(existingOrder, request, normalizedTicker, tradeAccountId);
             }
 
             var utcNow = DateTime.UtcNow;
             var order = new TradeOrder
             {
                 Id = request.OrderId,
+                TradeAccountId = tradeAccountId,
                 StockTicker = normalizedTicker,
                 BidAmount = request.BidAmount,
                 Volume = request.Volume,
@@ -102,7 +123,7 @@ namespace TradingSystem.Api.Controllers
                     throw;
                 }
 
-                return BuildDuplicateRequestResponse(existingOrder, request, normalizedTicker);
+                return BuildDuplicateRequestResponse(existingOrder, request, normalizedTicker, tradeAccountId);
             }
 
             await _publishEndpoint.Publish(new ProcessTradeCommand { OrderId = order.Id });
@@ -119,6 +140,7 @@ namespace TradingSystem.Api.Controllers
         }
 
         [HttpGet("price/{ticker}")]
+        [Authorize(Policy = AuthorizationPolicies.PricesRead)]
         public async Task<IActionResult> GetRealTimePrice(string ticker)
         {
             var normalizedTicker = ticker.Trim().ToUpperInvariant();
@@ -147,9 +169,9 @@ namespace TradingSystem.Api.Controllers
             return Ok(stockPrice);
         }
 
-        private IActionResult BuildDuplicateRequestResponse(TradeOrder existingOrder, PlaceBidRequest request, string normalizedTicker)
+        private IActionResult BuildDuplicateRequestResponse(TradeOrder existingOrder, PlaceBidRequest request, string normalizedTicker, long tradeAccountId)
         {
-            if (!MatchesExistingOrder(existingOrder, request, normalizedTicker))
+            if (!MatchesExistingOrder(existingOrder, request, normalizedTicker, tradeAccountId))
             {
                 return Conflict(new
                 {
@@ -171,9 +193,10 @@ namespace TradingSystem.Api.Controllers
             });
         }
 
-        private static bool MatchesExistingOrder(TradeOrder existingOrder, PlaceBidRequest request, string normalizedTicker)
+        private static bool MatchesExistingOrder(TradeOrder existingOrder, PlaceBidRequest request, string normalizedTicker, long tradeAccountId)
         {
-            return existingOrder.StockTicker == normalizedTicker
+            return existingOrder.TradeAccountId == tradeAccountId
+                && existingOrder.StockTicker == normalizedTicker
                 && existingOrder.BidAmount == request.BidAmount
                 && existingOrder.Volume == request.Volume
                 && existingOrder.IsBuy == request.IsBuy

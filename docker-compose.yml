@@ -24,21 +24,21 @@ services:
       retries: 5
       start_period: 30s
 
-  redis-cache:
-    image: redis:7-alpine
-    container_name: tradingsystem-redis
+  cache-store:
+    image: valkey/valkey:9.0-alpine
+    container_name: tradingsystem-cache
     ports:
       - "6379:6379"
     networks:
       - trading-network
     healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
+      test: ["CMD", "valkey-cli", "ping"]
       interval: 10s
       timeout: 5s
       retries: 5
 
   rabbitmq-broker:
-    image: rabbitmq:3-management-alpine
+    image: rabbitmq:4.2-management-alpine
     container_name: tradingsystem-rabbitmq
     environment:
       RABBITMQ_DEFAULT_USER: guest
@@ -55,7 +55,7 @@ services:
       retries: 5
       start_period: 15s
 
-  # ---.NET 8 API ---
+  # ---.NET 10 API ---
   tradingsystem-api:
     build: 
       context: "."
@@ -68,14 +68,43 @@ services:
     environment:
       - ASPNETCORE_ENVIRONMENT=Development
       - "ConnectionStrings__DefaultConnection=Server=tradingsystem-mysql;Database=tradingsystem;User=root;Password=rootpassword;"
+      - "Authentication__Issuer=TradingSystem.Auth"
+      - "Authentication__Audience=TradingSystem.Clients"
+      - "Authentication__SigningKey=ChangeThisToALongerDevelopmentSigningKey1234567890"
+      - "Authentication__SessionMinutes=30"
     depends_on:
       mysql-db:
         condition: service_healthy
-      redis-cache:
+      cache-store:
+        condition: service_healthy
+      rabbitmq-broker:
+        condition: service_healthy
+
+  tradingsystem-auth:
+    build:
+      context: "."
+      dockerfile: "TradingSystem.Auth/Dockerfile"
+    container_name: tradingsystem-auth
+    ports:
+      - "8081:8080"
+    networks:
+      - trading-network
+    environment:
+      - ASPNETCORE_ENVIRONMENT=Development
+      - "ConnectionStrings__DefaultConnection=Server=tradingsystem-mysql;Database=tradingsystem;User=root;Password=rootpassword;"
+      - "Authentication__Issuer=TradingSystem.Auth"
+      - "Authentication__Audience=TradingSystem.Clients"
+      - "Authentication__SigningKey=ChangeThisToALongerDevelopmentSigningKey1234567890"
+      - "Authentication__SessionMinutes=30"
+      - "Authentication__BootstrapAdminPassword=Admin123!ChangeMe"
+    depends_on:
+      mysql-db:
+        condition: service_healthy
+      cache-store:
         condition: service_healthy
 
 
-  # ---.NET 8 Worker ---
+  # ---.NET 10 Worker ---
   tradingsystem-worker:
     build: 
       context: "."
@@ -90,6 +119,8 @@ services:
       mysql-db:
         condition: service_healthy
       rabbitmq-broker:
+        condition: service_healthy
+      cache-store:
         condition: service_healthy
 
 volumes:

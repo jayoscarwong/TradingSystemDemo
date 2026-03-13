@@ -5,6 +5,7 @@ namespace TradingSystem.Domain.Entities
     public class TradeOrder
     {
         public Guid Id { get; set; }
+        public long TradeAccountId { get; set; }
         public required string StockTicker { get; set; }
         public decimal BidAmount { get; set; }
         public decimal Volume { get; set; }
@@ -17,5 +18,7 @@ namespace TradingSystem.Domain.Entities
         public DateTime CreatedAt { get; set; }
         public DateTime? ProcessedAt { get; set; }
         public DateTime RowVersion { get; set; }
+
+        public TradeAccount? TradeAccount { get; set; }
     }
 }
